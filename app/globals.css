@@ -24,3 +24,89 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+/* ---------- Album Club Cinematic Animations ---------- */
+
+@keyframes roomBreath {
+  0%   { transform: scale(1.04); }
+  100% { transform: scale(1.10); }
+}
+
+.animate-roomBreath {
+  will-change: transform;
+  animation: roomBreath 35s ease-in-out infinite alternate;
+}
+/* Vinyl animation*/
+@keyframes vinylSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-vinylSpin {
+  will-change: transform;
+  animation: vinylSpin 10s linear infinite;
+}
+/* Turntable pulsing glow when live */
+@keyframes stageGlow {
+  0% { box-shadow: 0 0 0 rgba(196,122,44,0.0); }
+  100% { box-shadow: 0 0 35px rgba(196,122,44,0.18); }
+}
+
+.animate-stageGlow {
+  animation: stageGlow 2.4s ease-in-out infinite alternate;
+}
+
+/* moving sheen that makes the vinyl rotation obvious */
+@keyframes vinylSheen {
+  0%   { transform: rotate(0deg);   opacity: 0.3; }
+  50%  { opacity: 0.1; }
+  100% { transform: rotate(360deg); opacity: 0.3; }
+}
+
+.vinyl-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255,255,255,0.22),
+    rgba(255,255,255,0.00) 35%,
+    rgba(255,255,255,0.10) 55%,
+    rgba(255,255,255,0.00) 75%,
+    rgba(255,255,255,0.18)
+  );
+  mix-blend-mode: screen;
+  filter: blur(0.5px);
+  pointer-events: none;
+}
+
+.animate-vinylSheen {
+  will-change: transform, opacity;
+  animation: vinylSheen 10s linear infinite;
+}
+/* Tonearm drop into the groove */
+@keyframes tonearmDrop {
+  0%   { transform: rotate(-10deg) translateY(-10px); opacity: 0.75; }
+  60%  { transform: rotate(0deg) translateY(0px); opacity: 1; }
+  100% { transform: rotate(0deg) translateY(0px); opacity: 1; }
+}
+
+.tonearm-drop {
+  animation: tonearmDrop 700ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+/* tiny contact sparkle */
+@keyframes needleSpark {
+  0%   { transform: scale(0.5); opacity: 0; }
+  20%  { transform: scale(1.0); opacity: 1; }
+  60%  { transform: scale(1.2); opacity: 0.65; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+.needle-spark {
+  animation: needleSpark 450ms ease-out both;
+  filter: blur(0.2px);
+}
+
+
+
+
