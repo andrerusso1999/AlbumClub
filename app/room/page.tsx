@@ -392,8 +392,9 @@ useEffect(() => {
 
 <audio
   ref={audioRef}
-  src="/audio/Lonerism.mp3"
+  src="https://obnhrzehigtbadynicss.supabase.co/storage/v1/object/public/Albums/Lonerism.mp3"
   preload="auto"
+  crossOrigin="anonymous"
 />
 
     </main>
