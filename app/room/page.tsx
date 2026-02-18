@@ -3,203 +3,318 @@
 import { supabase } from "@/lib/supabase";
 import { useEffect, useState, useRef } from "react";
 
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type Message = {
+  id: string;
+  display_name: string;
+  body: string;
+  created_at: string;
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function getOrCreate(key: string, fallback: () => string): string {
+  if (typeof window === "undefined") return "";
+  const stored = localStorage.getItem(key);
+  if (stored) return stored;
+  const value = fallback();
+  localStorage.setItem(key, value);
+  return value;
+}
+
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ─── Component ───────────────────────────────────────────────────────────────
+
 export default function RoomPage() {
-
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const [startedAt, setStartedAt] = useState<string | null>(null);
-
-  const [isLive, setIsLive] = useState(false);
-
-  const [needleDrop, setNeedleDrop] = useState(false);
-
-  const [chatOpen, setChatOpen] = useState(true);
-
-  const [countdown, setCountdown] = useState<number | null>(null);
-
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [startedAt, setStartedAt]       = useState<string | null>(null);
+  const [isLive, setIsLive]             = useState(false);
+  const [needleDrop, setNeedleDrop]     = useState(false);
+  const [chatOpen, setChatOpen]         = useState(true);
+  const [countdown, setCountdown]       = useState<number | null>(null);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
 
+  // Chat state
+  const [messages, setMessages]         = useState<Message[]>([]);
+  const [chatInput, setChatInput]       = useState("");
+  const [displayName, setDisplayName]   = useState("");
+  const [nameInput, setNameInput]       = useState("");
+  const [nameSet, setNameSet]           = useState(false);
+
+  // ── Init display name from localStorage ───────────────────────────────────
+  useEffect(() => {
+    const stored = localStorage.getItem("ac_display_name");
+    if (stored) {
+      setDisplayName(stored);
+      setNameSet(true);
+    }
+  }, []);
+
+  // ── Audio unlock on first click ───────────────────────────────────────────
   useEffect(() => {
     const unlock = async () => {
       if (!audioRef.current) return;
-  
       try {
         await audioRef.current.play();
         audioRef.current.pause();
         audioRef.current.currentTime = 0;
         setAudioUnlocked(true);
-        console.log("Audio unlocked");
       } catch {
-        console.log("Unlock failed (user interaction needed)");
+        // silently ignore — user interaction required
       }
-  
       window.removeEventListener("click", unlock);
     };
-  
     window.addEventListener("click", unlock, { once: true });
-  
+    return () => window.removeEventListener("click", unlock);
+  }, []);
+
+  // ── Needle drop animation when live ──────────────────────────────────────
+  useEffect(() => {
+    if (!isLive) return;
+    setNeedleDrop(true);
+    const t = setTimeout(() => setNeedleDrop(false), 600);
+    return () => clearTimeout(t);
+  }, [isLive]);
+
+  // ── Supabase realtime: room_state + messages ──────────────────────────────
+  useEffect(() => {
+    // Load existing messages
+    supabase
+      .from("messages")
+      .select("*")
+      .eq("room_id", "main")
+      .order("created_at", { ascending: true })
+      .limit(100)
+      .then(({ data }) => {
+        if (data) setMessages(data as Message[]);
+      });
+
+    // Load current room state
+    supabase
+      .from("room_state")
+      .select("*")
+      .eq("room_id", "main")
+      .single()
+      .then(({ data }) => {
+        if (!data) return;
+        if (data.started_at) {
+          setStartedAt(data.started_at);
+          const startTime = new Date(data.started_at).getTime();
+          const secondsLeft = Math.ceil((startTime - Date.now()) / 1000);
+          if (secondsLeft > 0) {
+            setCountdown(secondsLeft);
+          } else {
+            setIsLive(true);
+          }
+        }
+      });
+
+    // Subscribe to room_state changes
+    const roomChannel = supabase
+      .channel("room-state")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "room_state" },
+        (payload: any) => {
+          const row = payload.new as { is_live?: boolean; started_at?: string };
+          if (row?.started_at) {
+            setStartedAt(row.started_at);
+            const startTime = new Date(row.started_at).getTime();
+            const secondsLeft = Math.ceil((startTime - Date.now()) / 1000);
+            if (secondsLeft > 0) {
+              setCountdown(secondsLeft);
+            } else {
+              setCountdown(null);
+              setIsLive(true);
+            }
+          }
+          // Handle stop showtime
+          if (row?.is_live === false) {
+            setIsLive(false);
+            setCountdown(null);
+            setStartedAt(null);
+            if (audioRef.current) {
+              audioRef.current.pause();
+              audioRef.current.currentTime = 0;
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    // Subscribe to new messages
+    const msgChannel = supabase
+      .channel("messages-live")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: "room_id=eq.main" },
+        (payload: any) => {
+          setMessages((prev) => [...prev, payload.new as Message]);
+        }
+      )
+      .subscribe();
+
     return () => {
-      window.removeEventListener("click", unlock);
+      supabase.removeChannel(roomChannel);
+      supabase.removeChannel(msgChannel);
     };
   }, []);
-  
-  
+
+  // ── Countdown tick ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (countdown === null) return;
+    if (countdown <= 0) {
+      setCountdown(null);
+      setIsLive(true);
+      return;
+    }
+    const interval = setInterval(() => {
+      setCountdown((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [countdown]);
+
+  // ── Audio sync ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!startedAt || !audioUnlocked || !audioRef.current) return;
+    const startTime = new Date(startedAt).getTime();
+    const secondsPassed = Math.max(0, (Date.now() - startTime) / 1000);
+    audioRef.current.currentTime = secondsPassed;
+    audioRef.current.play().catch(() => {});
+  }, [startedAt, audioUnlocked]);
+
+  // ── Scroll chat to bottom on new messages ─────────────────────────────────
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  const saveName = () => {
+    const name = nameInput.trim();
+    if (!name) return;
+    localStorage.setItem("ac_display_name", name);
+    setDisplayName(name);
+    setNameSet(true);
+  };
 
   const triggerShowtime = async () => {
-    console.log("BUTTON CLICKED");
-  
-    // Host always allowed to start audio
+    // Prime audio on host's click
     if (audioRef.current) {
       try {
         await audioRef.current.play();
         audioRef.current.pause();
         audioRef.current.currentTime = 0;
         setAudioUnlocked(true);
-        console.log("Host audio primed");
-      } catch {
-        console.log("Host audio play blocked");
-      }
+      } catch {}
     }
-  
+
     const startTime = new Date(Date.now() + 5000).toISOString();
-  
-    const { error } = await supabase
+    await supabase
       .from("room_state")
-      .update({
-        is_live: true,
-        started_at: startTime,
-      })
+      .update({ is_live: true, started_at: startTime })
       .eq("room_id", "main");
-  
-    if (error) {
-      console.error("Showtime error:", error);
-    } else {
-      console.log("CEREMONIAL START SCHEDULED:", startTime);
+  };
+
+  const stopShowtime = async () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
+    await supabase
+      .from("room_state")
+      .update({ is_live: false, started_at: null })
+      .eq("room_id", "main");
   };
-  
-useEffect(() => {
-  if (isLive) {
-    setNeedleDrop(true);
-    const t = setTimeout(() => setNeedleDrop(false), 600); // after the drop moment
-    return () => clearTimeout(t);
-  }
-}, [isLive]);
 
-useEffect(() => {
-  const channel = supabase
-    .channel("room-state")
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "room_state",
-      },
-      (payload: any) => {
-        console.log("Realtime update:", payload);
-
-        const newRow = payload.new as {
-          is_live?: boolean;
-          started_at?: string;
-        };        
-
-        if (newRow?.started_at) {
-  setStartedAt(newRow.started_at);
-
-  const startTime = new Date(newRow.started_at).getTime();
-  const now = Date.now();
-  const secondsLeft = Math.ceil((startTime - now) / 1000);
-
-  if (secondsLeft > 0) {
-    setCountdown(secondsLeft);
-  } else {
-    setCountdown(null);
-    setIsLive(true);
-  }
-}
-
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
+  const sendMessage = async () => {
+    const body = chatInput.trim();
+    if (!body || !displayName) return;
+    setChatInput("");
+    await supabase.from("messages").insert({
+      room_id: "main",
+      display_name: displayName,
+      body,
+    });
   };
-}, []);
 
-// 🔹 Countdown interval (SEPARATE EFFECT)
-useEffect(() => {
-  if (countdown === null) return;
+  const handleChatKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") sendMessage();
+  };
 
-  if (countdown <= 0) {
-    setCountdown(null);
-    setIsLive(true);
-    return;
-  }
-
-  const interval = setInterval(() => {
-    setCountdown((prev) => (prev !== null ? prev - 1 : null));
-  }, 1000);
-
-  return () => clearInterval(interval);
-}, [countdown]);
-
-useEffect(() => {
-  if (!startedAt) return;
-  if (!audioUnlocked) {
-    console.log("Audio not unlocked yet");
-    return;
-  }
-  if (!audioRef.current) return;
-
-  const startTime = new Date(startedAt).getTime();
-  const now = Date.now();
-  const secondsPassed = Math.max(0, (now - startTime) / 1000);
-
-  console.log("SYNCING AUDIO AT:", secondsPassed);
-
-  audioRef.current.currentTime = secondsPassed;
-
-  audioRef.current.play().catch((err) => {
-    console.log("Autoplay blocked:", err);
-  });
-
-}, [startedAt, audioUnlocked]);
-
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <main className="relative min-h-screen text-[#F5E6C8] overflow-hidden">
 
-{countdown !== null && (
-  <div className="absolute inset-0 flex items-center justify-center text-6xl font-serif text-[#F5E6C8] z-50">
-    {countdown}
-  </div>
-)}
+      {/* ── Countdown overlay ── */}
+      {countdown !== null && (
+        <div className="absolute inset-0 flex items-center justify-center z-50 pointer-events-none">
+          <div className="text-[12rem] font-serif text-[#F5E6C8] opacity-90 leading-none">
+            {countdown}
+          </div>
+        </div>
+      )}
 
-      {/* Background image (smooth breathing) */}
+      {/* ── Name prompt overlay (first visit) ── */}
+      {!nameSet && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="rounded-2xl border border-[#F5E6C8]/15 bg-black/60 p-8 w-80 text-center shadow-2xl">
+            <div className="text-xs tracking-[0.3em] uppercase text-[#C47A2C] mb-3">
+              Welcome
+            </div>
+            <h2 className="font-serif text-2xl mb-2">Who are you?</h2>
+            <p className="text-sm text-[#F5E6C8]/60 mb-6">
+              Pick a name for the chat
+            </p>
+            <input
+              autoFocus
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && saveName()}
+              className="w-full rounded-xl bg-black/30 border border-[#F5E6C8]/15 px-4 py-3 text-sm outline-none placeholder:text-[#F5E6C8]/30 focus:border-[#C47A2C]/50 mb-4"
+              placeholder="Your name..."
+              maxLength={24}
+            />
+            <button
+              onClick={saveName}
+              className="w-full rounded-xl bg-[#6B1F1F] hover:bg-[#8A2A2A] transition px-4 py-3 text-sm tracking-[0.2em] uppercase"
+            >
+              Enter the Room
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Background ── */}
       <img
         src="/room-bg.jpg"
         alt=""
         className={`absolute inset-0 w-full h-full object-cover animate-roomBreath transition-all duration-1000 ${
           isLive ? "brightness-75 scale-105" : "brightness-100 scale-100"
         }`}
-        
       />
-
-      {/* Cinematic overlays */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-[1px]" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,0,0,0)_0%,rgba(0,0,0,0.75)_85%)]" />
 
-      {/* Header */}
-      <header className={`relative z-10 w-full px-6 py-4 border-b transition-all duration-700 ${
-  isLive
-    ? "border-[#C47A2C]/50 shadow-[0_0_25px_rgba(196,122,44,0.2)]"
-    : "border-[#F5E6C8]/20"
-}`}>
-
+      {/* ── Header ── */}
+      <header
+        className={`relative z-10 w-full px-6 py-4 border-b transition-all duration-700 ${
+          isLive
+            ? "border-[#C47A2C]/50 shadow-[0_0_25px_rgba(196,122,44,0.2)]"
+            : "border-[#F5E6C8]/20"
+        }`}
+      >
         <div className="mx-auto max-w-6xl flex items-center justify-between">
-
           <div className="flex flex-col">
             <span className="text-xs tracking-[0.3em] uppercase text-[#C47A2C]">
               Now Showing
@@ -214,189 +329,183 @@ useEffect(() => {
               <div className="text-xs uppercase tracking-[0.25em] text-[#F5E6C8]/70">
                 Showtime
               </div>
-              <div className="font-mono text-lg md:text-xl">
-                8:00 PM
-              </div>
+              <div className="font-mono text-lg md:text-xl">8:00 PM</div>
             </div>
 
-            {/* Live Toggle (temporary for development) */}
-            <button
-              onClick={triggerShowtime}
-              className="rounded-xl bg-black/30 border border-[#F5E6C8]/15 px-4 py-2 text-xs tracking-[0.25em] uppercase hover:bg-black/40 transition"
-            >
-              {isLive ? "Now Playing" : "Start Showtime"}
-            
-            </button>
+            {isLive ? (
+              <button
+                onClick={stopShowtime}
+                className="rounded-xl bg-black/30 border border-red-500/30 px-4 py-2 text-xs tracking-[0.25em] uppercase hover:bg-red-900/20 transition text-red-400"
+              >
+                End Session
+              </button>
+            ) : (
+              <button
+                onClick={triggerShowtime}
+                className="rounded-xl bg-black/30 border border-[#F5E6C8]/15 px-4 py-2 text-xs tracking-[0.25em] uppercase hover:bg-black/40 transition"
+              >
+                Start Showtime
+              </button>
+            )}
           </div>
-
         </div>
       </header>
 
-      {/* Center Stage */}
-<section className="relative z-10 flex flex-col items-center justify-center min-h-[70vh] text-center">
+      {/* ── Center Stage ── */}
+      <section className="relative z-10 flex flex-col items-center justify-center min-h-[70vh] text-center">
 
-{/* Room Title */}
-<div className="mb-10">
-  <div className="text-xs tracking-[0.3em] uppercase text-[#C47A2C]">
-    Listening Room
-  </div>
-  <h2 className="mt-3 text-4xl md:text-5xl font-serif">
-    Russo’s Lounge
-  </h2>
-  <p className="mt-3 text-[#F5E6C8]/70">
-    Full-album experience. No skips. Just vibe.
-  </p>
-</div>
-
-{/* Turntable Stage */}
-<div
-  className={`relative w-[460px] h-[460px] flex items-center justify-center ${
-    isLive ? "animate-stageGlow" : ""
-  }`}
-  style={{ transform: "translateX(-20px)" }} // optical centering tweak
->
-
-  {/* Platter Base */}
-  <div className="absolute inset-0 rounded-2xl border border-[#F5E6C8]/15 bg-black/40 backdrop-blur-md shadow-2xl" />
-
-  {/* Vinyl */}
-  <div
-    className={`relative w-72 h-72 rounded-full bg-black shadow-xl ${
-      isLive ? "animate-vinylSpin" : ""
-    }`}
-  >
-
-    {/* Grooves */}
-    <div className="absolute inset-4 rounded-full border border-white/10" />
-    <div className="absolute inset-8 rounded-full border border-white/10" />
-    <div className="absolute inset-12 rounded-full border border-white/10" />
-
-    {/* Label */}
-    <div className="absolute inset-0 flex items-center justify-center">
-      <div className="w-16 h-16 rounded-full bg-[#C47A2C]/90 shadow-inner" />
-    </div>
-    {/* sheen (makes rotation obvious) */}
-  <div className={`vinyl-sheen ${isLive ? "animate-vinylSheen" : ""}`} />
-  </div>
-
-{/* Tonearm (classic top-right hardware, lands ~4 o’clock) */}
-<div
-  className={`absolute right-[24px] top-[34px] pointer-events-none ${
-    isLive ? "tonearm-drop" : ""
-  }`}
->
-  {/* hardware base */}
-  <div className="relative w-24 h-24">
-    {/* outer ring */}
-    <div className="absolute right-0 top-0 w-16 h-16 rounded-full bg-[#F5E6C8]/10 border border-[#F5E6C8]/25 shadow-sm" />
-    {/* inner hub */}
-    <div className="absolute right-[14px] top-[14px] w-8 h-8 rounded-full bg-[#F5E6C8]/12 border border-[#F5E6C8]/25" />
-    {/* little knob */}
-    <div className="absolute right-[2px] top-[46px] w-5 h-5 rounded-full bg-[#F5E6C8]/10 border border-[#F5E6C8]/20" />
-
-    {/* arm (anchored at hub) */}
-    <div className="absolute right-[30px] top-[30px] origin-[100%_50%] rotate-[-70deg]">
-      {/* arm tube */}
-      <div className="w-56 h-[6px] rounded-full bg-[#F5E6C8]/22 border border-[#F5E6C8]/15 shadow-sm" />
-
-      {/* headshell */}
-      <div className="absolute left-[-10px] top-[-2px] w-12 h-8 rounded-md bg-[#F5E6C8]/14 border border-[#F5E6C8]/20 shadow-sm rotate-[-10deg]" />
-      {/* cartridge */}
-      <div className="absolute left-[2px] top-[4px] w-6 h-4 rounded bg-[#F5E6C8]/18 border border-[#F5E6C8]/20" />
-
-      {/* stylus tip (near record) */}
-      <div className="absolute left-[8px] top-[16px] w-2 h-2 rounded-full bg-[#C47A2C]/90 shadow" />
-
-      {/* contact sparkle (only on drop moment) */}
-      {needleDrop && (
-        <div className="absolute left-[4px] top-[12px] w-5 h-5 needle-spark">
-          <div className="absolute inset-0 rounded-full bg-[#C47A2C]/35" />
-          <div className="absolute left-1/2 top-1/2 w-1 h-6 -translate-x-1/2 -translate-y-1/2 bg-[#C47A2C]/45 rounded" />
-          <div className="absolute left-1/2 top-1/2 h-1 w-6 -translate-x-1/2 -translate-y-1/2 bg-[#C47A2C]/45 rounded" />
+        <div className="mb-10">
+          <div className="text-xs tracking-[0.3em] uppercase text-[#C47A2C]">
+            Listening Room
+          </div>
+          <h2 className="mt-3 text-4xl md:text-5xl font-serif">
+            Russo&apos;s Lounge
+          </h2>
+          <p className="mt-3 text-[#F5E6C8]/70">
+            Full-album experience. No skips. Just vibe.
+          </p>
         </div>
-      )}
-    </div>
-  </div>
-</div>
 
-</div>
+        {/* Turntable Stage */}
+        <div
+          className={`relative w-[460px] h-[460px] flex items-center justify-center ${
+            isLive ? "animate-stageGlow" : ""
+          }`}
+          style={{ transform: "translateX(-20px)" }}
+        >
+          {/* Platter Base */}
+          <div className="absolute inset-0 rounded-2xl border border-[#F5E6C8]/15 bg-black/40 backdrop-blur-md shadow-2xl" />
 
-{/* Status */}
-<div className="mt-10 text-sm tracking-[0.25em] uppercase text-[#F5E6C8]/60">
-  {isLive ? "LIVE — spinning" : "Waiting for showtime"}
-</div>
+          {/* Vinyl */}
+          <div
+            className={`relative w-72 h-72 rounded-full bg-black shadow-xl ${
+              isLive ? "animate-vinylSpin" : ""
+            }`}
+          >
+            <div className="absolute inset-4 rounded-full border border-white/10" />
+            <div className="absolute inset-8 rounded-full border border-white/10" />
+            <div className="absolute inset-12 rounded-full border border-white/10" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-[#C47A2C]/90 shadow-inner" />
+            </div>
+            <div className={`vinyl-sheen ${isLive ? "animate-vinylSheen" : ""}`} />
+          </div>
 
-</section>
-{/* Floating Chat (bottom-right, minimizable) */}
-<div className="fixed bottom-6 right-6 z-30 max-w-[92vw]">
-  {chatOpen ? (
-    <div className="w-[360px] overflow-hidden rounded-2xl border border-[#F5E6C8]/15 bg-black/45 backdrop-blur-md shadow-2xl">
-      {/* header */}
-      <div className="px-4 py-3 border-b border-[#F5E6C8]/10 flex items-center justify-between">
-        <div className="flex items-baseline gap-2">
-          <div className="font-serif text-lg">Chat</div>
-          <div className="text-[10px] tracking-[0.25em] uppercase text-[#F5E6C8]/60">
-            {isLive ? "Live" : "Lobby"}
+          {/* Tonearm */}
+          <div
+            className={`absolute right-[24px] top-[34px] pointer-events-none ${
+              isLive ? "tonearm-drop" : ""
+            }`}
+          >
+            <div className="relative w-24 h-24">
+              <div className="absolute right-0 top-0 w-16 h-16 rounded-full bg-[#F5E6C8]/10 border border-[#F5E6C8]/25 shadow-sm" />
+              <div className="absolute right-[14px] top-[14px] w-8 h-8 rounded-full bg-[#F5E6C8]/12 border border-[#F5E6C8]/25" />
+              <div className="absolute right-[2px] top-[46px] w-5 h-5 rounded-full bg-[#F5E6C8]/10 border border-[#F5E6C8]/20" />
+              <div className="absolute right-[30px] top-[30px] origin-[100%_50%] rotate-[-70deg]">
+                <div className="w-56 h-[6px] rounded-full bg-[#F5E6C8]/22 border border-[#F5E6C8]/15 shadow-sm" />
+                <div className="absolute left-[-10px] top-[-2px] w-12 h-8 rounded-md bg-[#F5E6C8]/14 border border-[#F5E6C8]/20 shadow-sm rotate-[-10deg]" />
+                <div className="absolute left-[2px] top-[4px] w-6 h-4 rounded bg-[#F5E6C8]/18 border border-[#F5E6C8]/20" />
+                <div className="absolute left-[8px] top-[16px] w-2 h-2 rounded-full bg-[#C47A2C]/90 shadow" />
+                {needleDrop && (
+                  <div className="absolute left-[4px] top-[12px] w-5 h-5 needle-spark">
+                    <div className="absolute inset-0 rounded-full bg-[#C47A2C]/35" />
+                    <div className="absolute left-1/2 top-1/2 w-1 h-6 -translate-x-1/2 -translate-y-1/2 bg-[#C47A2C]/45 rounded" />
+                    <div className="absolute left-1/2 top-1/2 h-1 w-6 -translate-x-1/2 -translate-y-1/2 bg-[#C47A2C]/45 rounded" />
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
-        <button
-          onClick={() => setChatOpen(false)}
-          className="rounded-lg px-2 py-1 text-xs tracking-[0.25em] uppercase border border-[#F5E6C8]/15 bg-black/25 hover:bg-black/35 transition"
-          aria-label="Minimize chat"
-        >
-          Minimize
-        </button>
+        <div className="mt-10 text-sm tracking-[0.25em] uppercase text-[#F5E6C8]/60">
+          {isLive ? "LIVE — spinning" : "Waiting for showtime"}
+        </div>
+      </section>
+
+      {/* ── Chat ── */}
+      <div className="fixed bottom-6 right-6 z-30 max-w-[92vw]">
+        {chatOpen ? (
+          <div className="w-[360px] overflow-hidden rounded-2xl border border-[#F5E6C8]/15 bg-black/45 backdrop-blur-md shadow-2xl">
+            {/* Chat header */}
+            <div className="px-4 py-3 border-b border-[#F5E6C8]/10 flex items-center justify-between">
+              <div className="flex items-baseline gap-2">
+                <div className="font-serif text-lg">Chat</div>
+                <div className="text-[10px] tracking-[0.25em] uppercase text-[#F5E6C8]/60">
+                  {isLive ? "Live" : "Lobby"}
+                </div>
+              </div>
+              <button
+                onClick={() => setChatOpen(false)}
+                className="rounded-lg px-2 py-1 text-xs tracking-[0.25em] uppercase border border-[#F5E6C8]/15 bg-black/25 hover:bg-black/35 transition"
+              >
+                Minimize
+              </button>
+            </div>
+
+            {/* Messages */}
+            <div className="px-4 py-3 h-52 overflow-y-auto text-sm text-[#F5E6C8]/80 space-y-2">
+              {messages.length === 0 && (
+                <p className="text-[#F5E6C8]/30 text-xs text-center mt-8">
+                  No messages yet. Say something.
+                </p>
+              )}
+              {messages.map((msg) => (
+                <div key={msg.id} className="group">
+                  <span className="text-[#C47A2C] font-medium">{msg.display_name}:</span>{" "}
+                  <span>{msg.body}</span>
+                  <span className="ml-2 text-[10px] text-[#F5E6C8]/25 opacity-0 group-hover:opacity-100 transition">
+                    {formatTime(msg.created_at)}
+                  </span>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="p-3 border-t border-[#F5E6C8]/10 flex gap-2">
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={handleChatKey}
+                disabled={!nameSet}
+                className="flex-1 rounded-xl bg-black/30 border border-[#F5E6C8]/15 px-3 py-2 text-sm outline-none placeholder:text-[#F5E6C8]/40 focus:border-[#C47A2C]/40 disabled:opacity-40"
+                placeholder={nameSet ? "Type a message..." : "Set your name first…"}
+              />
+              <button
+                onClick={sendMessage}
+                disabled={!nameSet || !chatInput.trim()}
+                className="rounded-xl bg-[#6B1F1F]/80 hover:bg-[#8A2A2A] transition px-4 py-2 text-sm disabled:opacity-40"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setChatOpen(true)}
+            className="flex items-center gap-3 rounded-full border border-[#F5E6C8]/15 bg-black/45 backdrop-blur-md shadow-2xl px-4 py-3 hover:bg-black/55 transition"
+          >
+            <span className="font-serif">Chat</span>
+            <span className="text-[10px] tracking-[0.25em] uppercase text-[#F5E6C8]/60">
+              {isLive ? "Live" : "Lobby"}
+            </span>
+            {messages.length > 0 && (
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#C47A2C]/80 text-[10px] text-black">
+                {messages.length > 99 ? "99+" : messages.length}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
-      {/* messages */}
-      <div className="px-4 py-3 h-48 overflow-y-auto text-sm text-[#F5E6C8]/80 space-y-2">
-        <p>
-          <span className="text-[#C47A2C]">Andre:</span> lights low, let’s do this
-        </p>
-        <p>
-          <span className="text-[#C47A2C]">João:</span> this intro is insane
-        </p>
-      </div>
-
-      {/* input */}
-      <div className="p-3 border-t border-[#F5E6C8]/10 flex gap-2">
-        <input
-          className="flex-1 rounded-xl bg-black/30 border border-[#F5E6C8]/15 px-3 py-2 text-sm outline-none placeholder:text-[#F5E6C8]/40 focus:border-[#C47A2C]/40"
-          placeholder="Type a message..."
-        />
-        <button className="rounded-xl bg-[#6B1F1F]/80 hover:bg-[#8A2A2A] transition px-4 py-2 text-sm">
-          Send
-        </button>
-      </div>
-    </div>
-  ) : (
-    /* Collapsed pill */
-    <button
-      onClick={() => setChatOpen(true)}
-      className="flex items-center gap-3 rounded-full border border-[#F5E6C8]/15 bg-black/45 backdrop-blur-md shadow-2xl px-4 py-3 hover:bg-black/55 transition"
-      aria-label="Open chat"
-    >
-      <span className="font-serif">Chat</span>
-      <span className="text-[10px] tracking-[0.25em] uppercase text-[#F5E6C8]/60">
-        {isLive ? "Live" : "Lobby"}
-      </span>
-
-      {/* optional unread badge (placeholder) */}
-      <span className="ml-1 inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#C47A2C]/80 text-[10px] text-black">
-        2
-      </span>
-    </button>
-  )}
-</div>
-
-<audio
-  ref={audioRef}
-  src="https://obnhrzehigtbadynicss.supabase.co/storage/v1/object/public/Albums/Lonerism.mp3"
-  preload="auto"
-  crossOrigin="anonymous"
-/>
-
+      {/* ── Hidden audio ── */}
+      <audio
+        ref={audioRef}
+        src="https://obnhrzehigtbadynicss.supabase.co/storage/v1/object/public/Albums/Lonerism.mp3"
+        preload="auto"
+        crossOrigin="anonymous"
+      />
     </main>
   );
 }
