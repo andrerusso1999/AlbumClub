@@ -1,9 +1,14 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 export default function RoomPage() {
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [startedAt, setStartedAt] = useState<string | null>(null);
+
   const [isLive, setIsLive] = useState(false);
 
   const [needleDrop, setNeedleDrop] = useState(false);
@@ -12,8 +17,49 @@ export default function RoomPage() {
 
   const [countdown, setCountdown] = useState<number | null>(null);
 
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+
+  useEffect(() => {
+    const unlock = async () => {
+      if (!audioRef.current) return;
+  
+      try {
+        await audioRef.current.play();
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        setAudioUnlocked(true);
+        console.log("Audio unlocked");
+      } catch {
+        console.log("Unlock failed (user interaction needed)");
+      }
+  
+      window.removeEventListener("click", unlock);
+    };
+  
+    window.addEventListener("click", unlock, { once: true });
+  
+    return () => {
+      window.removeEventListener("click", unlock);
+    };
+  }, []);
+  
+  
+
   const triggerShowtime = async () => {
     console.log("BUTTON CLICKED");
+  
+    // Host always allowed to start audio
+    if (audioRef.current) {
+      try {
+        await audioRef.current.play();
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        setAudioUnlocked(true);
+        console.log("Host audio primed");
+      } catch {
+        console.log("Host audio play blocked");
+      }
+    }
   
     const startTime = new Date(Date.now() + 5000).toISOString();
   
@@ -59,17 +105,20 @@ useEffect(() => {
         };        
 
         if (newRow?.started_at) {
-          const startTime = new Date(newRow.started_at).getTime();
-          const now = Date.now();
-          const secondsLeft = Math.ceil((startTime - now) / 1000);
-        
-          if (secondsLeft > 0) {
-            setCountdown(secondsLeft);
-          } else {
-            setCountdown(null);
-            setIsLive(true);
-          }
-        }
+  setStartedAt(newRow.started_at);
+
+  const startTime = new Date(newRow.started_at).getTime();
+  const now = Date.now();
+  const secondsLeft = Math.ceil((startTime - now) / 1000);
+
+  if (secondsLeft > 0) {
+    setCountdown(secondsLeft);
+  } else {
+    setCountdown(null);
+    setIsLive(true);
+  }
+}
+
       }
     )
     .subscribe();
@@ -95,6 +144,29 @@ useEffect(() => {
 
   return () => clearInterval(interval);
 }, [countdown]);
+
+useEffect(() => {
+  if (!startedAt) return;
+  if (!audioUnlocked) {
+    console.log("Audio not unlocked yet");
+    return;
+  }
+  if (!audioRef.current) return;
+
+  const startTime = new Date(startedAt).getTime();
+  const now = Date.now();
+  const secondsPassed = Math.max(0, (now - startTime) / 1000);
+
+  console.log("SYNCING AUDIO AT:", secondsPassed);
+
+  audioRef.current.currentTime = secondsPassed;
+
+  audioRef.current.play().catch((err) => {
+    console.log("Autoplay blocked:", err);
+  });
+
+}, [startedAt, audioUnlocked]);
+
 
   return (
     <main className="relative min-h-screen text-[#F5E6C8] overflow-hidden">
@@ -317,6 +389,12 @@ useEffect(() => {
     </button>
   )}
 </div>
+
+<audio
+  ref={audioRef}
+  src="/audio/Lonerism.mp3"
+  preload="auto"
+/>
 
     </main>
   );
