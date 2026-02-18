@@ -55,6 +55,7 @@ export default function RoomPage() {
   const crackleRef = useRef<{ctx:AudioContext;source:AudioBufferSourceNode}|null>(null);
 
   const [phase, setPhase]                 = useState<Phase>("waiting");
+  const [isAdmin, setIsAdmin]             = useState(false);
   const [preCountdown, setPreCountdown]   = useState(PRE_SHOW_SECS);
   const [startedAt, setStartedAt]         = useState<string|null>(null);
   const [isLive, setIsLive]               = useState(false);
@@ -97,12 +98,17 @@ export default function RoomPage() {
   useEffect(()=>{ const id=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(id); },[]);
 
   // Phase logic: waiting → entering at showtime → live after 30s ceremony
+  // Admin can bypass the lock entirely
   useEffect(()=>{
     const showtimeToday = new Date(); showtimeToday.setHours(SHOWTIME_HOUR,0,0,0);
+    if (isAdmin && phase==="waiting") {
+      setPhase("live"); // admin goes straight to live room
+      return;
+    }
     if (now >= showtimeToday && phase==="waiting") {
       setPhase("entering");
     }
-  },[now, phase]);
+  },[now, phase, isAdmin]);
 
   // Pre-show countdown
   useEffect(()=>{
@@ -136,6 +142,7 @@ export default function RoomPage() {
   useEffect(()=>{ if(crackleOn&&isLive)startCrackle();else stopCrackle(); return()=>stopCrackle(); },[crackleOn,isLive,startCrackle,stopCrackle]);
 
   useEffect(()=>{ const s=localStorage.getItem("ac_display_name");if(s){setDisplayName(s);setNameSet(true);} },[]);
+  useEffect(()=>{ setIsAdmin(localStorage.getItem("ac_admin")==="true"); },[]);
   useEffect(()=>{
     const unlock=async()=>{
       if(!audioRef.current)return;
@@ -406,7 +413,12 @@ export default function RoomPage() {
             <div className="fc text-xl text-white font-semibold">8:00 PM</div>
           </div>
 
-          {isLive ? (
+          {isAdmin ? (
+            <button onClick={stopShowtime}
+              className="px-5 py-2.5 rounded-lg fc text-base tracking-[0.2em] uppercase text-red-300 border border-red-400/40 bg-red-900/35 hover:bg-red-900/55 transition backdrop-blur-sm font-semibold">
+              End Session
+            </button>
+          ) : isLive ? (
             <button onClick={stopShowtime}
               className="px-5 py-2.5 rounded-lg fc text-base tracking-[0.2em] uppercase text-red-300 border border-red-400/40 bg-red-900/35 hover:bg-red-900/55 transition backdrop-blur-sm font-semibold">
               End Session

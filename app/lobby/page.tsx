@@ -74,9 +74,11 @@ export default function LobbyPage() {
   const [userId, setUserId] = useState("");
   const [covers, setCovers] = useState<Record<string,string>>({});
   const [isLocked, setIsLocked] = useState(true); // room locked until showtime
+  const [isAdmin, setIsAdmin]   = useState(false);
 
   useEffect(()=>{ const id=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(id); },[]);
   useEffect(()=>{ setUserId(getOrCreateUserId()); },[]);
+  useEffect(()=>{ setIsAdmin(localStorage.getItem("ac_admin")==="true"); },[]);
   useEffect(()=>{
     albums.forEach(async a=>{
       const url = await fetchCover(a);
@@ -257,7 +259,7 @@ export default function LobbyPage() {
 
         {/* Enter Room button */}
         <div className="mt-10 flex flex-col items-center gap-3 fu" style={{animationDelay:"0.45s"}}>
-          {isLocked ? (
+          {isLocked && !isAdmin ? (
             <div className="flex flex-col items-center gap-2">
               <div className="px-12 py-4 rounded-sm fc text-xl tracking-[0.4em] uppercase text-white/30 border border-white/12 bg-black/30">
                 Room Opens at 8:00 PM
