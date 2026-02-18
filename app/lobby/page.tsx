@@ -61,7 +61,8 @@ async function fetchCover(album: Album): Promise<string> {
     const mbid = data?.releases?.[0]?.id;
     if (!mbid) return "";
     const art = await fetch(`https://coverartarchive.org/release/${mbid}`).then(r => r.json());
-    const url = art?.images?.find((i: any) => i.front)?.thumbnails?.large || art?.images?.[0]?.image || "";
+    const raw = art?.images?.find((i: any) => i.front)?.thumbnails?.large || art?.images?.[0]?.image || "";
+    const url = raw.replace("http://", "https://");
     if (url) localStorage.setItem(k, url);
     return url;
   } catch { return ""; }

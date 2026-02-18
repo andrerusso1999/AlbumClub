@@ -82,14 +82,20 @@ export default function RoomPage() {
 
   // Cover + color
   useEffect(()=>{
+    // Clear any cached http:// URLs
     const cached = localStorage.getItem("ac_cover_lonerism");
-    if (cached) { setCoverUrl(cached); extractColor(cached,(r,g,b)=>setDominantRgb([r,g,b])); return; }
+    if (cached) {
+      const fixed = cached.replace("http://", "https://");
+      if (fixed !== cached) localStorage.setItem("ac_cover_lonerism", fixed);
+      setCoverUrl(fixed); extractColor(fixed,(r,g,b)=>setDominantRgb([r,g,b])); return;
+    }
     fetch("https://musicbrainz.org/ws/2/release/?query=lonerism+tame+impala&fmt=json&limit=3")
       .then(r=>r.json()).then(d=>{
         const mbid=d?.releases?.[0]?.id; if(!mbid)return;
         return fetch(`https://coverartarchive.org/release/${mbid}`).then(r=>r.json());
       }).then((art:any)=>{
-        const url=art?.images?.find((i:any)=>i.front)?.thumbnails?.large||art?.images?.[0]?.image||"";
+        const raw=art?.images?.find((i:any)=>i.front)?.thumbnails?.large||art?.images?.[0]?.image||"";
+        const url=raw.replace("http://","https://");
         if(url){setCoverUrl(url);localStorage.setItem("ac_cover_lonerism",url);extractColor(url,(r,g,b)=>setDominantRgb([r,g,b]));}
       }).catch(()=>{});
   },[]);
