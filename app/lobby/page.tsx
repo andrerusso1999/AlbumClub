@@ -234,6 +234,7 @@ export default function LobbyPage() {
                     <img
                       src={album.cover}
                       alt={album.title}
+                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                       onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
@@ -312,7 +313,7 @@ export default function LobbyPage() {
             {myAlbum ? (
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-lg overflow-hidden border border-[#C47A2C]/45 shadow-lg shrink-0">
-                  <img src={myAlbum.cover} alt="" className="w-full h-full object-cover" />
+                  <img src={myAlbum.cover} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 </div>
                 <div>
                   <div className="fp text-lg font-bold text-white leading-tight">{myAlbum.title}</div>

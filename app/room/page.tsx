@@ -31,19 +31,15 @@ const ALBUM = {
   label:  "Modular Recordings",
   genre:  "Psychedelic Rock",
   tracks: 12,
-  // Wikimedia hosted — stable HTTPS, no CORS issues
   cover:  "https://upload.wikimedia.org/wikipedia/en/4/49/Lonerism.jpg",
 };
 const SHOWTIME_HOUR = 20;
 const PRE_SHOW_SECS = 30;
-// Tonearm sweep:
-// At rest (lifted):  -38deg — arm swung away to the right, stylus raised
-// Start of play:      28deg — stylus touching outer groove (bottom-right of vinyl)
-// End of play:        48deg — stylus swept inward near label
-// The full 20° sweep over 51 minutes = very slow, ~0.39° per minute
-const ARM_REST  = -38;
-const ARM_START =  28;
-const ARM_END   =  48;
+
+// Tonearm angles
+const ARM_REST  = -38;  // parked to the side, stylus lifted
+const ARM_START =  28;  // outer groove
+const ARM_END   =  48;  // inner groove / label
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getCurrentTrack(s: number) {
@@ -62,11 +58,12 @@ function fmtTs(iso: string) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function RoomPage() {
-  const audioRef   = useRef<HTMLAudioElement | null>(null);
-  const msgEndRef  = useRef<HTMLDivElement | null>(null);
-  const crackleRef = useRef<{ ctx: AudioContext; source: AudioBufferSourceNode } | null>(null);
-  // Track whether vinyl slide has already played — only play it once per session
-  const slidePlayedRef = useRef(false);
+  const audioRef         = useRef<HTMLAudioElement | null>(null);
+  const msgEndRef        = useRef<HTMLDivElement | null>(null);
+  const crackleRef       = useRef<{ ctx: AudioContext; source: AudioBufferSourceNode } | null>(null);
+  const slidePlayedRef   = useRef(false);
+  const prevIsLiveRef    = useRef(false);
+  const needleTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Phase
   const [phase,        setPhase]        = useState<Phase>("waiting");
@@ -75,44 +72,57 @@ export default function RoomPage() {
   const [now,          setNow]          = useState(() => new Date());
 
   // Playback
-  const [startedAt,      setStartedAt]      = useState<string | null>(null);
-  const [isLive,         setIsLive]         = useState(false);
-  const [audioUnlocked,  setAudioUnlocked]  = useState(false);
-  const [elapsed,        setElapsed]        = useState(0);
-  const [albumFinished,  setAlbumFinished]  = useState(false);
+  const [startedAt,     setStartedAt]     = useState<string | null>(null);
+  const [isLive,        setIsLive]        = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [elapsed,       setElapsed]       = useState(0);
+  const [albumFinished, setAlbumFinished] = useState(false);
 
   // UI
-  const [volume,        setVolume]        = useState(0.8);
-  const [showVolume,    setShowVolume]    = useState(false);
-  const [listenerCount]                  = useState(2);
-  const [crackleOn,     setCrackleOn]    = useState(false);
-  const [needleDrop,    setNeedleDrop]   = useState(false);
-  const [vinylSlideIn,  setVinylSlideIn] = useState(false);
-  // Dominant color extracted from album cover
-  const [rgb, setRgb] = useState<[number,number,number]>([72, 110, 130]);
+  const [volume,       setVolume]       = useState(0.8);
+  const [showVolume,   setShowVolume]   = useState(false);
+  const [listenerCount]                 = useState(2);
+  const [crackleOn,    setCrackleOn]   = useState(false);
+  const [needleDrop,   setNeedleDrop]  = useState(false);
+  const [vinylSlideIn, setVinylSlideIn] = useState(false);
+
+  // Tonearm — managed via state so we can control the transition per-phase
+  const [tonearmAngle,      setTonearmAngle]      = useState(ARM_REST);
+  const [tonearmTransition, setTonearmTransition] = useState("transform 0.8s ease");
+
+  // Accent color extracted from cover
+  const [rgb, setRgb] = useState<[number, number, number]>([72, 110, 130]);
   const [cr, cg, cb2] = rgb;
 
   // Chat
-  const [chatOpen,     setChatOpen]     = useState(true);
-  const [chatExpanded, setChatExpanded] = useState(false);
-  const [messages,     setMessages]     = useState<Message[]>([]);
-  const [chatInput,    setChatInput]    = useState("");
-  const [displayName,  setDisplayName]  = useState("");
-  const [nameInput,    setNameInput]    = useState("");
-  const [nameSet,      setNameSet]      = useState(false);
+  const [chatOpen,    setChatOpen]    = useState(true);
+  const [chatExpanded,setChatExpanded]= useState(false);
+  const [messages,    setMessages]    = useState<Message[]>([]);
+  const [chatInput,   setChatInput]   = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [nameInput,   setNameInput]   = useState("");
+  const [nameSet,     setNameSet]     = useState(false);
 
-  // ── Extract dominant color from cover image ────────────────────────────────
+  // Accent helpers
+  const accent     = `rgb(${cr},${cg},${cb2})`;
+  const accentRgba = (a: number) => `rgba(${cr},${cg},${cb2},${a})`;
+  const lighter    = `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+30,255)},0.9)`;
+
+  // ── Extract dominant color from cover ────────────────────────────────────
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
+    img.referrerPolicy = "no-referrer";
     img.onload = () => {
-      const c = document.createElement("canvas"); c.width = 50; c.height = 50;
-      const ctx = c.getContext("2d"); if (!ctx) return;
-      ctx.drawImage(img, 0, 0, 50, 50);
-      const d = ctx.getImageData(0, 0, 50, 50).data;
-      let r = 0, g = 0, b = 0, n = 0;
-      for (let i = 0; i < d.length; i += 16) { r += d[i]; g += d[i+1]; b += d[i+2]; n++; }
-      setRgb([Math.floor(r/n), Math.floor(g/n), Math.floor(b/n)]);
+      try {
+        const c = document.createElement("canvas"); c.width = 50; c.height = 50;
+        const ctx = c.getContext("2d"); if (!ctx) return;
+        ctx.drawImage(img, 0, 0, 50, 50);
+        const d = ctx.getImageData(0, 0, 50, 50).data;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let i = 0; i < d.length; i += 16) { r += d[i]; g += d[i+1]; b += d[i+2]; n++; }
+        setRgb([Math.floor(r/n), Math.floor(g/n), Math.floor(b/n)]);
+      } catch {}
     };
     img.src = ALBUM.cover;
   }, []);
@@ -124,12 +134,8 @@ export default function RoomPage() {
   }, []);
 
   // ── Admin + phase ─────────────────────────────────────────────────────────
+  useEffect(() => { setIsAdmin(localStorage.getItem("ac_admin") === "true"); }, []);
   useEffect(() => {
-    setIsAdmin(localStorage.getItem("ac_admin") === "true");
-  }, []);
-
-  useEffect(() => {
-    // Admin skips straight to live room
     if (isAdmin && phase === "waiting") { setPhase("live"); return; }
     const st = new Date(); st.setHours(SHOWTIME_HOUR, 0, 0, 0);
     if (now >= st && phase === "waiting") setPhase("entering");
@@ -148,7 +154,7 @@ export default function RoomPage() {
     return () => clearInterval(iv);
   }, [phase]);
 
-  // ── Crackle (vinyl noise) ─────────────────────────────────────────────────
+  // ── Crackle ───────────────────────────────────────────────────────────────
   const startCrackle = useCallback(() => {
     try {
       const ctx = new AudioContext();
@@ -180,7 +186,7 @@ export default function RoomPage() {
     if (s) { setDisplayName(s); setNameSet(true); }
   }, []);
 
-  // ── Audio unlock (must happen on user gesture) ────────────────────────────
+  // ── Audio unlock ──────────────────────────────────────────────────────────
   useEffect(() => {
     const unlock = async () => {
       if (!audioRef.current) return;
@@ -194,21 +200,51 @@ export default function RoomPage() {
     window.addEventListener("click", unlock, { once: true });
     return () => window.removeEventListener("click", unlock);
   }, []);
-
   useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; }, [volume]);
 
-  // ── Needle drop + vinyl slide — only once per go-live ────────────────────
+  // ── Needle drop + vinyl slide ──────────────────────────────────────────────
   useEffect(() => {
     if (!isLive) return;
     setNeedleDrop(true);
     const t = setTimeout(() => setNeedleDrop(false), 700);
-    // Only play slide-in animation once per session
     if (!slidePlayedRef.current) {
       setVinylSlideIn(true);
       slidePlayedRef.current = true;
     }
     return () => clearTimeout(t);
   }, [isLive]);
+
+  // ── Tonearm animation — proper drop / sweep / lift ────────────────────────
+  // Real turntable behaviour:
+  //   • Not live  → arm at rest (ARM_REST), quick ease
+  //   • Goes live → drop to ARM_START in ~1.5 s, then track elapsed slowly
+  //   • Stops     → lift back to ARM_REST in ~1.2 s
+  useEffect(() => {
+    const wasLive = prevIsLiveRef.current;
+    prevIsLiveRef.current = isLive;
+
+    if (isLive && !wasLive) {
+      // Clear any pending timer from a previous drop
+      if (needleTimerRef.current) { clearTimeout(needleTimerRef.current); }
+      // Drop: fast sweep from rest to outer groove
+      setTonearmTransition("transform 1.5s cubic-bezier(0.4, 0, 0.2, 1)");
+      setTonearmAngle(ARM_START);
+      // After the drop settles, begin slow position tracking
+      needleTimerRef.current = setTimeout(() => {
+        needleTimerRef.current = null;
+      }, 1600);
+    } else if (!isLive && wasLive) {
+      // Lift: sweep back to rest
+      if (needleTimerRef.current) { clearTimeout(needleTimerRef.current); needleTimerRef.current = null; }
+      setTonearmTransition("transform 1.2s ease-in");
+      setTonearmAngle(ARM_REST);
+    } else if (isLive && !needleTimerRef.current) {
+      // Continuous slow sweep while playing (angle barely moves — ~0.006°/s)
+      const target = ARM_START + (elapsed / ALBUM_DURATION) * (ARM_END - ARM_START);
+      setTonearmTransition("transform 4s linear");
+      setTonearmAngle(target);
+    }
+  }, [isLive, elapsed]);
 
   // ── Supabase realtime ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -250,28 +286,28 @@ export default function RoomPage() {
     return () => { supabase.removeChannel(roomCh); supabase.removeChannel(msgCh); };
   }, []);
 
-  // ── Sync audio position when startedAt is known ───────────────────────────
+  // ── Sync audio position ───────────────────────────────────────────────────
   useEffect(() => {
     if (!startedAt || !audioUnlocked || !audioRef.current) return;
     const sp = Math.max(0, (Date.now() - new Date(startedAt).getTime()) / 1000);
-    if (sp >= ALBUM_DURATION) return; // album already done
+    if (sp >= ALBUM_DURATION) return;
     audioRef.current.currentTime = sp;
     audioRef.current.play().catch(() => {});
   }, [startedAt, audioUnlocked]);
 
-  // ── Elapsed ticker + album-end detection ──────────────────────────────────
+  // ── Elapsed ticker + album-end guard ─────────────────────────────────────
   useEffect(() => {
     if (!isLive || !startedAt) return;
     const tick = () => {
-      const e = Math.max(0, (Date.now() - new Date(startedAt).getTime()) / 1000);
-      setElapsed(e);
+      const e = (Date.now() - new Date(startedAt).getTime()) / 1000;
       if (e >= ALBUM_DURATION) {
-        // Album done — freeze on last second, stop audio, show finished screen
         setElapsed(ALBUM_DURATION);
         setAlbumFinished(true);
         setIsLive(false);
         if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = ALBUM_DURATION; }
+        return;
       }
+      setElapsed(Math.max(0, e));
     };
     tick();
     const id = setInterval(tick, 1000);
@@ -289,7 +325,7 @@ export default function RoomPage() {
     if (audioRef.current) {
       try { await audioRef.current.play(); audioRef.current.pause(); audioRef.current.currentTime = 0; setAudioUnlocked(true); } catch {}
     }
-    slidePlayedRef.current = false; // allow slide animation again
+    slidePlayedRef.current = false;
     setAlbumFinished(false);
     await supabase.from("room_state")
       .update({ is_live: true, started_at: new Date(Date.now() + 3000).toISOString() })
@@ -299,7 +335,7 @@ export default function RoomPage() {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
     await supabase.from("room_state").update({ is_live: false, started_at: null }).eq("room_id", "main");
     setPhase(isAdmin ? "live" : "waiting");
-    setIsLive(false); setAlbumFinished(false);
+    setIsLive(false); setAlbumFinished(false); setElapsed(0);
     slidePlayedRef.current = false; setVinylSlideIn(false);
   };
   const sendMessage = async () => {
@@ -315,18 +351,7 @@ export default function RoomPage() {
   const tDur = next ? next.start - cur.start : ALBUM_DURATION - cur.start;
   const tPct = Math.min(100, (tEl / tDur) * 100);
 
-  // Tonearm angle — sweeps from ARM_START to ARM_END over full album
-  // CSS transition is 120s linear so it appears to barely move
-  const tonearmAngle = isLive
-    ? ARM_START + (elapsed / ALBUM_DURATION) * (ARM_END - ARM_START)
-    : ARM_REST;
-
-  // Accent colors derived from album art
-  const accent     = `rgb(${cr},${cg},${cb2})`;
-  const accentRgba = (a: number) => `rgba(${cr},${cg},${cb2},${a})`;
-  const lighter    = `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+30,255)},0.9)`;
-
-  // ── SHARED CSS ────────────────────────────────────────────────────────────
+  // ── Shared font CSS ────────────────────────────────────────────────────────
   const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,400;1,700&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&display=swap');
 .fp { font-family: 'Playfair Display', Georgia, serif; }
 .fc { font-family: 'Cormorant Garamond', Georgia, serif; }`;
@@ -342,9 +367,11 @@ export default function RoomPage() {
     const pad = (n: number) => String(n).padStart(2, "0");
     return (
       <main className="relative min-h-screen overflow-hidden flex items-center justify-center bg-[#060402]">
-        <style>{`${FONTS}`}</style>
-        <img src="/room-bg.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" style={{ filter: "brightness(0.32)" }} />
-        <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 50% 50%,transparent 20%,rgba(0,0,0,0.85) 100%)" }} />
+        <style>{FONTS}</style>
+        <img src="/room-bg.jpg" alt="" className="absolute inset-0 w-full h-full object-cover"
+          style={{ filter: "brightness(0.32)" }} />
+        <div className="absolute inset-0"
+          style={{ background: "radial-gradient(ellipse at 50% 50%,transparent 20%,rgba(0,0,0,0.85) 100%)" }} />
         <div className="relative z-10 text-center text-[#F5E6C8] px-6">
           <div className="fc text-xl text-white/50 mb-5 tracking-[0.45em] uppercase italic">The room opens in</div>
           <div className="fp font-black mb-8 tabular-nums leading-none"
@@ -374,16 +401,15 @@ export default function RoomPage() {
           @keyframes fadeUp { from { opacity:0; transform:translateY(18px); } to { opacity:1; transform:translateY(0); } }
           .fade-up { animation: fadeUp 0.9s ease both; }
         `}</style>
-        <img src="/room-bg.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" style={{ filter: "brightness(0.52)" }} />
-        <div className="absolute inset-0" style={{ background: `radial-gradient(ellipse at 50% 45%,${accentRgba(0.12)} 0%,rgba(0,0,0,0.8) 100%)` }} />
-
+        <img src="/room-bg.jpg" alt="" className="absolute inset-0 w-full h-full object-cover"
+          style={{ filter: "brightness(0.52)" }} />
+        <div className="absolute inset-0"
+          style={{ background: `radial-gradient(ellipse at 50% 45%,${accentRgba(0.12)} 0%,rgba(0,0,0,0.8) 100%)` }} />
         <div className="relative z-10 text-center text-[#F5E6C8] px-8" style={{ maxWidth: "480px" }}>
-          {/* Album cover drops in dramatically */}
           <div className="cover-drop mx-auto mb-8 rounded-2xl overflow-hidden"
             style={{ width: "190px", height: "190px", border: "1px solid rgba(255,255,255,0.14)", boxShadow: `0 35px 90px rgba(0,0,0,0.9), 0 0 70px ${accentRgba(0.3)}` }}>
-            <img src={ALBUM.cover} alt="" className="w-full h-full object-cover" />
+            <img src={ALBUM.cover} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
           </div>
-
           <div className="fade-up fp font-black text-5xl leading-none mb-2"
             style={{ animationDelay: "0.35s", textShadow: "0 4px 40px rgba(0,0,0,0.95)" }}>
             {ALBUM.title}
@@ -392,7 +418,6 @@ export default function RoomPage() {
             style={{ animationDelay: "0.5s", color: lighter }}>
             {ALBUM.artist}
           </div>
-
           {/* Circular countdown */}
           <div className="fade-up relative mx-auto mb-7" style={{ width: "114px", height: "114px", animationDelay: "0.25s" }}>
             <svg className="absolute inset-0" width="114" height="114" viewBox="0 0 114 114">
@@ -407,7 +432,6 @@ export default function RoomPage() {
               <span className="fp font-black text-4xl text-white">{preCountdown}</span>
             </div>
           </div>
-
           <div className="fade-up fc italic text-xl text-white/52" style={{ animationDelay: "0.6s" }}>
             The needle drops in a moment…
           </div>
@@ -430,8 +454,10 @@ export default function RoomPage() {
           @keyframes fadeIn { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
           .fade-in { animation: fadeIn 1.8s ease both; }
         `}</style>
-        <img src="/room-bg.jpg" alt="" className="absolute inset-0 w-full h-full object-cover" style={{ filter: "brightness(0.28)" }} />
-        <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 50% 50%,transparent 18%,rgba(0,0,0,0.9) 100%)" }} />
+        <img src="/room-bg.jpg" alt="" className="absolute inset-0 w-full h-full object-cover"
+          style={{ filter: "brightness(0.28)" }} />
+        <div className="absolute inset-0"
+          style={{ background: "radial-gradient(ellipse at 50% 50%,transparent 18%,rgba(0,0,0,0.9) 100%)" }} />
         <div className="fade-in relative z-10 text-center text-[#F5E6C8] px-6">
           <div className="fc italic text-xl text-white/42 mb-5 tracking-[0.35em] uppercase">That's a wrap</div>
           <div className="fp font-black text-6xl mb-2" style={{ textShadow: "0 4px 40px rgba(0,0,0,0.95)" }}>{ALBUM.title}</div>
@@ -459,9 +485,8 @@ export default function RoomPage() {
 
         /* Vinyl spin */
         @keyframes vSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .v-spin { animation: vSpin 1.8s linear infinite; }
 
-        /* Vinyl sheen — rotates with the record */
+        /* Vinyl sheen */
         @keyframes vSheen {
           0%   { transform: rotate(0deg);   opacity: .22; }
           50%  {                            opacity: .06; }
@@ -488,13 +513,12 @@ export default function RoomPage() {
         }
         .nspark { animation: nSpark 600ms ease-out both; }
 
-        /* Vinyl slides in from album cover (bottom-left) to platter */
+        /* Vinyl slides in from album cover position to platter */
         @keyframes vinylSlide {
           0%   { transform: translate(-430px, 230px) scale(0.42) rotate(-12deg); opacity: 0; }
           25%  { opacity: 1; }
           100% { transform: translate(0, 0) scale(1) rotate(0deg); opacity: 1; }
         }
-        .vinyl-slide { animation: vinylSlide 1.4s cubic-bezier(0.22,1,0.36,1) both 0.05s; }
 
         /* Volume slider */
         input[type=range].vsl {
@@ -507,7 +531,7 @@ export default function RoomPage() {
         }
       `}</style>
 
-      {/* Ambient color wash from album cover */}
+      {/* Ambient color wash */}
       <div className="absolute inset-0 pointer-events-none z-0"
         style={{ background: `radial-gradient(ellipse at 28% 38%, ${accentRgba(0.18)} 0%, transparent 55%), radial-gradient(ellipse at 72% 72%, ${accentRgba(0.08)} 0%, transparent 50%)`, transition: "background 3s ease" }} />
 
@@ -523,7 +547,7 @@ export default function RoomPage() {
             <input autoFocus value={nameInput} onChange={e => setNameInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && saveName()}
               className="w-full rounded-lg bg-white/6 border border-white/15 px-4 py-3 text-lg outline-none placeholder:text-white/25 focus:border-white/30 mb-4 fc text-white"
-              placeholder="Your name..." maxLength={24} />
+              placeholder="Your name…" maxLength={24} />
             <button onClick={saveName}
               className="w-full rounded-lg px-4 py-3 fc text-lg tracking-[0.3em] uppercase text-white font-semibold"
               style={{ background: `linear-gradient(to bottom, ${accentRgba(0.65)}, rgba(${Math.floor(cr*.6)},${Math.floor(cg*.6)},${Math.floor(cb2*.6)},0.8))`, border: `1px solid ${accentRgba(0.38)}` }}>
@@ -559,9 +583,11 @@ export default function RoomPage() {
         <div className="flex items-center gap-3">
           {/* Listener count */}
           <div className="flex items-center gap-2 px-4 py-2.5 rounded-full backdrop-blur-sm"
-            style={{ background: "rgba(0,0,0,0.68)", border: "1px solid rgba(255,255,255,0.24)" }}>
+            style={{ background: "rgba(0,0,0,0.68)", border: "1px solid rgba(255,255,255,0.18)" }}>
             <div className="w-2.5 h-2.5 rounded-full"
-              style={isLive ? { background: accent, boxShadow: `0 0 8px ${accentRgba(0.9)}`, animation: "pulse 2s infinite" } : { background: "rgba(255,255,255,0.32)" }} />
+              style={isLive
+                ? { background: accent, boxShadow: `0 0 8px ${accentRgba(0.9)}`, animation: "pulse 2s infinite" }
+                : { background: "rgba(255,255,255,0.28)" }} />
             <span className="fc text-[17px] text-white font-semibold">{listenerCount} listening</span>
           </div>
 
@@ -569,7 +595,7 @@ export default function RoomPage() {
           <div className="relative">
             <button onClick={() => setShowVolume(v => !v)}
               className="flex items-center gap-2 px-4 py-2.5 rounded-full backdrop-blur-sm"
-              style={{ background: "rgba(0,0,0,0.68)", border: "1px solid rgba(255,255,255,0.24)" }}>
+              style={{ background: "rgba(0,0,0,0.68)", border: "1px solid rgba(255,255,255,0.18)" }}>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                 {volume > 0   && <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
@@ -579,7 +605,7 @@ export default function RoomPage() {
             </button>
             {showVolume && (
               <div className="absolute top-14 right-0 rounded-xl p-5 w-48 z-30 backdrop-blur-xl"
-                style={{ background: "rgba(0,0,0,0.92)", border: "1px solid rgba(255,255,255,0.2)" }}>
+                style={{ background: "rgba(0,0,0,0.92)", border: "1px solid rgba(255,255,255,0.16)" }}>
                 <input type="range" min="0" max="1" step="0.05" value={volume}
                   onChange={e => setVolume(parseFloat(e.target.value))} className="vsl w-full" />
                 <div className="text-center fc text-base text-white/55 mt-2">{Math.round(volume * 100)}%</div>
@@ -592,7 +618,7 @@ export default function RoomPage() {
             className="flex items-center gap-2 px-4 py-2.5 rounded-full backdrop-blur-sm transition-all"
             style={{
               background: crackleOn ? accentRgba(0.28) : "rgba(0,0,0,0.68)",
-              border:     crackleOn ? `1px solid ${accentRgba(0.5)}` : "1px solid rgba(255,255,255,0.24)",
+              border:     crackleOn ? `1px solid ${accentRgba(0.5)}` : "1px solid rgba(255,255,255,0.18)",
             }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
               <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="3" />
@@ -600,73 +626,101 @@ export default function RoomPage() {
             <span className="fc text-[17px] text-white font-semibold">{crackleOn ? "Crackle ✓" : "Crackle"}</span>
           </button>
 
-          {/* Showtime label */}
-          <div className="text-right px-1">
-            <div className="fc text-xs tracking-[0.45em] uppercase text-white/58 font-semibold">Showtime</div>
-            <div className="fc text-xl text-white font-semibold">8:00 PM</div>
-          </div>
-
           {/* Session control */}
           {isLive ? (
             <button onClick={stopShowtime}
               className="px-5 py-2.5 rounded-lg fc font-semibold transition backdrop-blur-sm"
-              style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "#fca5a5", background: "rgba(180,30,30,0.32)", border: "1px solid rgba(248,113,113,0.4)" }}>
+              style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "#fca5a5", background: "rgba(180,30,30,0.32)", border: "1px solid rgba(248,113,113,0.35)" }}>
               End Session
             </button>
           ) : (
             <button onClick={triggerShowtime}
               className="px-5 py-2.5 rounded-lg fc font-semibold transition backdrop-blur-sm"
-              style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "white", background: "rgba(0,0,0,0.58)", border: "1px solid rgba(255,255,255,0.28)" }}>
-              {albumFinished ? "Play Again" : "Start Showtime"}
+              style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "white", background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.24)" }}>
+              Start Showtime
             </button>
           )}
         </div>
       </header>
 
-      {/* ── ALBUM INFO — left panel, moved away from the far edge ── */}
-      <div className="absolute z-20" style={{ left: "6%", top: "14%", width: "220px" }}>
-        {/* Cover art with glow */}
-        <div className="relative mb-6">
+      {/* ── ALBUM INFO — left panel ── */}
+      <div className="absolute z-20" style={{ left: "4%", top: "13%", width: "260px" }}>
+
+        {/* Cover art */}
+        <div className="relative mb-5">
           <div className="absolute -inset-6 rounded-2xl pointer-events-none"
             style={{ background: `radial-gradient(ellipse, ${accentRgba(0.35)} 0%, transparent 70%)`, filter: "blur(24px)" }} />
-          <img src={ALBUM.cover} alt={ALBUM.title}
+          <img
+            src={ALBUM.cover}
+            alt={ALBUM.title}
+            referrerPolicy="no-referrer"
             className="relative rounded-xl w-full block"
-            style={{ border: "1px solid rgba(255,255,255,0.12)", boxShadow: `0 35px 90px rgba(0,0,0,0.92), 0 0 60px ${accentRgba(0.22)}` }} />
+            style={{ border: "1px solid rgba(255,255,255,0.12)", boxShadow: `0 30px 80px rgba(0,0,0,0.92), 0 0 50px ${accentRgba(0.22)}` }}
+          />
         </div>
 
         {/* Album title */}
-        <div className="fp font-black leading-none mb-2 text-white"
-          style={{ fontSize: "2.6rem", textShadow: "0 2px 40px rgba(0,0,0,0.99)" }}>
+        <div className="fp font-black leading-none mb-1.5 text-white"
+          style={{ fontSize: "2.4rem", textShadow: "0 2px 40px rgba(0,0,0,0.99)" }}>
           {ALBUM.title}
         </div>
         {/* Artist */}
-        <div className="fp italic mb-5" style={{ fontSize: "1.4rem", color: lighter }}>
+        <div className="fp italic mb-4" style={{ fontSize: "1.3rem", color: lighter }}>
           {ALBUM.artist}
         </div>
 
         {/* Metadata */}
-        <div className="space-y-2">
-          {([["Year", ALBUM.year],["Label", ALBUM.label],["Genre", ALBUM.genre],["Tracks",`${ALBUM.tracks} tracks`]] as [string,string][]).map(([k, v]) => (
+        <div className="space-y-1.5 mb-5">
+          {([["Year", ALBUM.year],["Label", ALBUM.label],["Genre", ALBUM.genre]] as [string,string][]).map(([k, v]) => (
             <div key={k} className="flex items-center gap-3">
-              <span className="fc text-xs tracking-[0.42em] uppercase text-white/32 w-14 shrink-0">{k}</span>
-              <span className="fc text-[1rem] text-white/75">{v}</span>
+              <span className="fc text-xs tracking-[0.42em] uppercase text-white/28 w-12 shrink-0">{k}</span>
+              <span className="fc text-[0.95rem] text-white/70">{v}</span>
             </div>
           ))}
         </div>
 
+        {/* Live indicator */}
         {isLive && (
-          <div className="mt-5 flex items-center gap-2">
+          <div className="flex items-center gap-2 mb-5">
             <div className="w-2.5 h-2.5 rounded-full"
               style={{ background: accent, boxShadow: `0 0 9px ${accent}`, animation: "pulse 1.5s infinite" }} />
             <span className="fc tracking-[0.38em] uppercase font-semibold"
-              style={{ fontSize: "0.95rem", color: lighter }}>
+              style={{ fontSize: "0.9rem", color: lighter }}>
               Live Now
             </span>
           </div>
         )}
+
+        {/* ── Track listing — 3 columns × 4 rows ── */}
+        <div>
+          <div className="fc text-white/28 mb-2.5 font-semibold"
+            style={{ fontSize: "0.68rem", letterSpacing: "0.5em", textTransform: "uppercase" }}>
+            Track Listing
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "5px 10px" }}>
+            {TRACKS.map((track, i) => {
+              const isCurrentTrack = isLive && i === tIdx;
+              return (
+                <div key={i} className="flex items-baseline gap-1 min-w-0">
+                  <span className="fc shrink-0" style={{ fontSize: "0.65rem", color: isCurrentTrack ? accentRgba(0.8) : "rgba(255,255,255,0.22)", minWidth: "14px" }}>
+                    {i + 1}
+                  </span>
+                  <span className="fc truncate" style={{
+                    fontSize: "0.72rem",
+                    color: isCurrentTrack ? lighter : "rgba(255,255,255,0.42)",
+                    fontWeight: isCurrentTrack ? 600 : 400,
+                    textShadow: isCurrentTrack ? `0 0 12px ${accentRgba(0.5)}` : "none",
+                  }}>
+                    {track.title}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {/* ── TURNTABLE — centered both axes ── */}
+      {/* ── TURNTABLE — centered ── */}
       <div className="absolute z-20"
         style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)", width: "320px" }}>
 
@@ -689,24 +743,38 @@ export default function RoomPage() {
             <div className="absolute inset-[7px] rounded-full"
               style={{ background: "radial-gradient(circle at 40% 35%, #1c1c1c, #0d0d0d)", border: "1px solid rgba(255,255,255,0.03)" }} />
 
-            {/* Vinyl record — slides in on first go-live, then spins */}
+            {/* Vinyl record — inline animation so spin + slide can coexist */}
             <div
-              className={[
-                "absolute inset-[12px] rounded-full",
-                isLive         ? "v-spin"     : "",
-                vinylSlideIn   ? "vinyl-slide" : "",
-              ].join(" ")}
-              style={{ background: "radial-gradient(circle at 50% 50%, #1c1c1c 0%, #0c0c0c 60%, #141414 100%)" }}>
+              className="absolute inset-[12px] rounded-full"
+              style={{
+                background: "radial-gradient(circle at 50% 50%, #1c1c1c 0%, #0c0c0c 60%, #141414 100%)",
+                animation: isLive
+                  ? vinylSlideIn
+                    ? `vinylSlide 1.4s cubic-bezier(0.22,1,0.36,1) both 0.05s, vSpin 1.8s linear 1.45s infinite`
+                    : `vSpin 1.8s linear infinite`
+                  : "none",
+              }}>
               {/* Groove rings */}
               {[14,22,30,38,46,54,62,70,78,86].map(r2 => (
                 <div key={r2} className="absolute rounded-full border border-white/[0.025]" style={{ inset: `${r2/2}%` }} />
               ))}
-              {/* Label with album cover art */}
+              {/* Label — larger so the art is actually visible */}
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="relative rounded-full overflow-hidden flex items-center justify-center border border-white/10"
-                  style={{ width: "22%", height: "22%" }}>
-                  <img src={ALBUM.cover} alt="" className="absolute inset-0 w-full h-full object-cover opacity-75" />
-                  <div className="relative rounded-full bg-[#0a0a0a] z-10" style={{ width: "28%", height: "28%" }} />
+                <div className="relative rounded-full overflow-hidden flex items-center justify-center"
+                  style={{
+                    width: "35%", height: "35%",
+                    border: "1px solid rgba(255,255,255,0.15)",
+                    boxShadow: "0 0 12px rgba(0,0,0,0.8)",
+                  }}>
+                  <img
+                    src={ALBUM.cover}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ opacity: 0.8 }}
+                  />
+                  {/* Spindle hole */}
+                  <div className="relative rounded-full bg-[#0a0a0a] z-10" style={{ width: "14%", height: "14%" }} />
                 </div>
               </div>
               {/* Vinyl sheen */}
@@ -717,13 +785,10 @@ export default function RoomPage() {
             <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full z-20"
               style={{ background: "linear-gradient(145deg,#999,#555)", boxShadow: "0 1px 4px rgba(0,0,0,0.92)" }} />
 
-            {/* ── TONEARM ──────────────────────────────────────────────────────
-                Pivot: top-right corner of platter (right:-20px, top:-14px).
-                The arm extends LEFT from the pivot point.
-                ARM_REST  = -38° → arm swung far to the right/up, stylus raised off record
-                ARM_START = +28° → stylus touching outer groove (lower-right quadrant of vinyl)
-                ARM_END   = +48° → stylus near inner groove / label
-                CSS transition is 120s linear — arm barely perceptibly moves during play.
+            {/* ── TONEARM ──
+                Pivot is top-right of platter.
+                Angles: ARM_REST=-38° (parked), ARM_START=28° (outer groove), ARM_END=48° (inner groove).
+                Animation is driven by tonearmAngle + tonearmTransition state — no CSS transition fighting.
             ── */}
             <div className="absolute z-30" style={{ right: "-20px", top: "-14px" }}>
               <div className="relative" style={{ width: "56px", height: "56px" }}>
@@ -739,15 +804,14 @@ export default function RoomPage() {
                   </div>
                 </div>
 
-                {/* Arm rotates from pivot center */}
+                {/* Arm rotates from pivot center — angle and transition from state */}
                 <div className="absolute z-10"
                   style={{
                     right:           "24px",
                     top:             "24px",
                     transformOrigin: "100% 50%",
                     transform:       `rotate(${tonearmAngle}deg)`,
-                    // 120s transition while live = arm moves ~1° every ~6s → visually imperceptible
-                    transition:      isLive ? "transform 120s linear" : "transform 0.85s ease",
+                    transition:      tonearmTransition,
                   }}>
                   <div style={{ width: "200px", height: "7px", marginTop: "-3.5px", position: "relative" }}>
                     {/* Tube body */}
@@ -761,15 +825,15 @@ export default function RoomPage() {
                         <div style={{ position: "absolute", left: "4px", bottom: "-7px", width: "2px", height: "8px", background: "linear-gradient(to bottom,#bbb,#555)", borderRadius: "0 0 1px 1px" }} />
                         {/* Stylus tip — glows in album color when live */}
                         <div style={{
-                          position:   "absolute",
-                          left:       "3px",
-                          bottom:     "-12px",
-                          width:      "3px",
-                          height:     "3px",
+                          position:     "absolute",
+                          left:         "3px",
+                          bottom:       "-12px",
+                          width:        "3px",
+                          height:       "3px",
                           borderRadius: "50%",
-                          background: isLive ? accent : "#888",
-                          boxShadow:  isLive ? `0 0 6px ${accent}, 0 0 12px ${accentRgba(0.5)}` : "none",
-                          transition: "background 0.5s, box-shadow 0.5s",
+                          background:   isLive ? accent : "#888",
+                          boxShadow:    isLive ? `0 0 6px ${accent}, 0 0 12px ${accentRgba(0.5)}` : "none",
+                          transition:   "background 0.5s, box-shadow 0.5s",
                         }} />
                       </div>
                     </div>
@@ -797,7 +861,7 @@ export default function RoomPage() {
             )}
           </div>
 
-          {/* Speed selector + status */}
+          {/* Speed selector + power status */}
           <div className="flex justify-between items-center mt-4 px-1">
             <div className="flex items-center gap-3">
               {["33⅓", "45"].map((s, i) => (
@@ -805,34 +869,36 @@ export default function RoomPage() {
                   <div className="w-3 h-3 rounded-full border"
                     style={i === 0
                       ? { background: accent, borderColor: accent, boxShadow: `0 0 7px ${accentRgba(0.7)}` }
-                      : { borderColor: "rgba(255,255,255,0.2)" }} />
-                  <span className="fc text-sm text-white/50">{s}</span>
+                      : { borderColor: "rgba(255,255,255,0.18)" }} />
+                  <span className="fc text-sm text-white/45">{s}</span>
                 </div>
               ))}
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-2.5 h-2.5 rounded-full"
-                style={isLive ? { background: "#4ade80", boxShadow: "0 0 7px rgba(74,222,128,0.9)" } : { background: "rgba(255,255,255,0.16)" }} />
-              <span className="fc text-sm text-white/40">{isLive ? "ON" : "STBY"}</span>
+                style={isLive
+                  ? { background: "#4ade80", boxShadow: "0 0 7px rgba(74,222,128,0.9)" }
+                  : { background: "rgba(255,255,255,0.14)" }} />
+              <span className="fc text-sm text-white/38">{isLive ? "ON" : "STBY"}</span>
             </div>
           </div>
         </div>
 
         {/* Track info card */}
         {isLive ? (
-          <div className="mt-4 rounded-xl border border-white/10 bg-black/70 backdrop-blur-md px-6 py-5"
+          <div className="mt-4 rounded-xl border border-white/10 bg-black/72 backdrop-blur-md px-6 py-5"
             style={{ boxShadow: `0 10px 40px rgba(0,0,0,0.72), 0 0 0 1px ${accentRgba(0.09)}` }}>
             <div className="flex justify-between items-start mb-3">
               <div className="flex-1 min-w-0 pr-4">
                 <div className="fc font-semibold mb-1.5"
-                  style={{ fontSize: "0.72rem", letterSpacing: "0.45em", textTransform: "uppercase", color: `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+20,255)},0.72)` }}>
+                  style={{ fontSize: "0.7rem", letterSpacing: "0.45em", textTransform: "uppercase", color: `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+20,255)},0.7)` }}>
                   Track {tIdx + 1} of {TRACKS.length}
                 </div>
                 <div className="fp font-bold text-white truncate" style={{ fontSize: "1.2rem", lineHeight: 1.3 }}>{cur.title}</div>
               </div>
               <div className="text-right fc shrink-0">
                 <div className="text-white/82 font-semibold" style={{ fontSize: "1rem" }}>{fmt(tEl)}</div>
-                <div className="text-white/32" style={{ fontSize: "0.95rem" }}>/ {fmt(tDur)}</div>
+                <div className="text-white/30" style={{ fontSize: "0.9rem" }}>/ {fmt(tDur)}</div>
               </div>
             </div>
             {/* Progress bar */}
@@ -841,11 +907,11 @@ export default function RoomPage() {
                 style={{ width: `${tPct}%`, background: `linear-gradient(to right, ${accentRgba(0.5)}, ${accentRgba(0.92)})` }} />
             </div>
             {next && (
-              <div className="mt-3 fc text-white/35" style={{ fontSize: "0.95rem" }}>Up next — {next.title}</div>
+              <div className="mt-3 fc text-white/32" style={{ fontSize: "0.9rem" }}>Up next — {next.title}</div>
             )}
           </div>
         ) : (
-          <div className="mt-4 text-center fc text-white/22 tracking-[0.4em] uppercase" style={{ fontSize: "0.95rem" }}>
+          <div className="mt-4 text-center fc text-white/20 tracking-[0.4em] uppercase" style={{ fontSize: "0.9rem" }}>
             Waiting for showtime
           </div>
         )}
@@ -861,15 +927,15 @@ export default function RoomPage() {
               <div className="flex items-center justify-between mb-5 shrink-0">
                 <div className="flex items-baseline gap-3">
                   <div className="fp font-bold text-white" style={{ fontSize: "1.5rem" }}>Chat</div>
-                  <div className="fc tracking-[0.45em] uppercase text-white/45"
-                    style={{ fontSize: "0.75rem" }}>{isLive ? "Live" : "Lobby"}</div>
+                  <div className="fc tracking-[0.45em] uppercase text-white/40"
+                    style={{ fontSize: "0.72rem" }}>{isLive ? "Live" : "Lobby"}</div>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => setChatExpanded(e => !e)}
-                    className="px-3 py-1.5 rounded fc text-white border border-white/18 bg-black/28 hover:bg-black/48 transition"
+                    className="px-3 py-1.5 rounded fc text-white border border-white/15 bg-black/25 hover:bg-black/45 transition"
                     style={{ fontSize: "0.9rem" }}>{chatExpanded ? "↙" : "↗"}</button>
                   <button onClick={() => setChatOpen(false)}
-                    className="px-3 py-1.5 rounded fc text-white border border-white/18 bg-black/28 hover:bg-black/48 transition"
+                    className="px-3 py-1.5 rounded fc text-white border border-white/15 bg-black/25 hover:bg-black/45 transition"
                     style={{ fontSize: "0.9rem" }}>✕</button>
                 </div>
               </div>
@@ -877,21 +943,22 @@ export default function RoomPage() {
               {/* Messages */}
               <div className="flex-1 overflow-y-auto space-y-4 pr-1 min-h-0">
                 {messages.length === 0 && (
-                  <p className="fc italic text-white/25 text-center mt-16" style={{ fontSize: "1.05rem" }}>
+                  <p className="fc italic text-white/22 text-center mt-16" style={{ fontSize: "1.05rem" }}>
                     The room is quiet.<br />Say something.
                   </p>
                 )}
                 {messages.map(msg => (
                   <div key={msg.id} className="group">
                     <div className="flex items-baseline gap-2 mb-0.5">
-                      <span className="fc font-semibold shrink-0" style={{ fontSize: "1rem", color: `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+20,255)},0.9)` }}>
+                      <span className="fc font-semibold shrink-0"
+                        style={{ fontSize: "1rem", color: `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+20,255)},0.9)` }}>
                         {msg.display_name}
                       </span>
                       <span className="fc text-white/18 opacity-0 group-hover:opacity-100 transition" style={{ fontSize: "0.78rem" }}>
                         {fmtTs(msg.created_at)}
                       </span>
                     </div>
-                    <div className="fc text-white/82 leading-snug" style={{ fontSize: "1rem" }}>{msg.body}</div>
+                    <div className="fc text-white/80 leading-snug" style={{ fontSize: "1rem" }}>{msg.body}</div>
                   </div>
                 ))}
                 <div ref={msgEndRef} />
@@ -901,12 +968,12 @@ export default function RoomPage() {
               <div className="shrink-0 mt-4 pt-4 border-t border-white/10 flex gap-2">
                 <input value={chatInput} onChange={e => setChatInput(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && sendMessage()} disabled={!nameSet}
-                  className="flex-1 rounded-lg bg-white/6 border border-white/15 px-4 py-3 outline-none placeholder:text-white/25 focus:border-white/28 disabled:opacity-25 fc text-white"
+                  className="flex-1 rounded-lg bg-white/6 border border-white/12 px-4 py-3 outline-none placeholder:text-white/22 focus:border-white/26 disabled:opacity-22 fc text-white"
                   style={{ fontSize: "1rem" }}
-                  placeholder={nameSet ? "Say something..." : "Set your name first…"} />
+                  placeholder={nameSet ? "Say something…" : "Set your name first…"} />
                 <button onClick={sendMessage} disabled={!nameSet || !chatInput.trim()}
-                  className="rounded-lg px-5 py-3 fc text-white font-semibold disabled:opacity-22 transition"
-                  style={{ fontSize: "1rem", background: "linear-gradient(to bottom,#5a1a1a,#321010)", border: "1px solid rgba(200,60,60,0.38)" }}>
+                  className="rounded-lg px-5 py-3 fc text-white font-semibold disabled:opacity-20 transition"
+                  style={{ fontSize: "1rem", background: "linear-gradient(to bottom,#5a1a1a,#321010)", border: "1px solid rgba(200,60,60,0.35)" }}>
                   Send
                 </button>
               </div>
@@ -914,13 +981,13 @@ export default function RoomPage() {
           </div>
         ) : (
           <button onClick={() => setChatOpen(true)}
-            className="absolute right-4 top-20 flex items-center gap-2 rounded-full border border-white/20 bg-black/65 backdrop-blur-md px-4 py-2.5 hover:bg-black/85 transition">
+            className="absolute right-4 top-20 flex items-center gap-2 rounded-full border border-white/18 bg-black/62 backdrop-blur-md px-4 py-2.5 hover:bg-black/82 transition">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
             <span className="fc text-white font-semibold" style={{ fontSize: "1rem" }}>Chat</span>
             {messages.length > 0 && (
-              <span className="w-5 h-5 rounded-full bg-white/22 flex items-center justify-center text-white" style={{ fontSize: "0.65rem" }}>
+              <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-white" style={{ fontSize: "0.65rem" }}>
                 {messages.length}
               </span>
             )}
