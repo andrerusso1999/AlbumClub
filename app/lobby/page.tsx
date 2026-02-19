@@ -11,25 +11,25 @@ const SHOWTIME_HOUR = 20;
 // Using Wikipedia/Wikimedia hosted images — stable, no API, no CORS issues
 const ALBUMS = [
   {
-    id:     "mysticism-romance",
-    title:  "Mysticism & Romance",
-    artist: "Tony Newton",
-    year:   "1976",
-    cover:  "https://upload.wikimedia.org/wikipedia/en/5/5c/TonyNewtonMysticismAndRomance.jpg",
+    id:     "rumours",
+    title:  "Rumours",
+    artist: "Fleetwood Mac",
+    year:   "1977",
+    cover:  "https://upload.wikimedia.org/wikipedia/en/thumb/f/f6/Fleetwood_Mac_-_Rumours.jpg/300px-Fleetwood_Mac_-_Rumours.jpg",
   },
   {
     id:     "lonerism",
     title:  "Lonerism",
     artist: "Tame Impala",
     year:   "2012",
-    cover:  "https://upload.wikimedia.org/wikipedia/en/4/49/Lonerism.jpg",
+    cover:  "https://upload.wikimedia.org/wikipedia/en/thumb/4/49/Lonerism.jpg/300px-Lonerism.jpg",
   },
   {
     id:     "abbey-road",
     title:  "Abbey Road",
     artist: "The Beatles",
     year:   "1969",
-    cover:  "https://upload.wikimedia.org/wikipedia/en/4/42/Beatles_-_Abbey_Road.jpg",
+    cover:  "https://upload.wikimedia.org/wikipedia/en/thumb/4/42/Beatles_-_Abbey_Road.jpg/300px-Beatles_-_Abbey_Road.jpg",
   },
 ];
 
@@ -55,12 +55,18 @@ export default function LobbyPage() {
   const [myVote,  setMyVote]  = useState<string | null>(null);
   const [now,     setNow]     = useState(() => new Date());
   const [userId,  setUserId]  = useState("");
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("admin") === "1") { localStorage.setItem("ac_admin", "true"); return true; }
+    } catch {}
+    return localStorage.getItem("ac_admin") === "true";
+  });
   const [zooming, setZooming] = useState(false);   // cinematic zoom state
 
   useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id); }, []);
   useEffect(() => { setUserId(getOrCreateUserId()); }, []);
-  useEffect(() => { setIsAdmin(localStorage.getItem("ac_admin") === "true"); }, []);
 
   // Showtime lock
   const isLocked = useMemo(() => {
@@ -234,6 +240,7 @@ export default function LobbyPage() {
                     <img
                       src={album.cover}
                       alt={album.title}
+                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                       onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
@@ -312,7 +319,7 @@ export default function LobbyPage() {
             {myAlbum ? (
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-lg overflow-hidden border border-[#C47A2C]/45 shadow-lg shrink-0">
-                  <img src={myAlbum.cover} alt="" className="w-full h-full object-cover" />
+                  <img src={myAlbum.cover} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 </div>
                 <div>
                   <div className="fp text-lg font-bold text-white leading-tight">{myAlbum.title}</div>
