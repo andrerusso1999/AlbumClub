@@ -104,6 +104,8 @@ export default function RoomPage() {
   // Tonearm — managed via state so we can control the transition per-phase
   const [tonearmAngle,      setTonearmAngle]      = useState(ARM_REST);
   const [tonearmTransition, setTonearmTransition] = useState("transform 0.8s ease");
+  const [isPaused,          setIsPaused]          = useState(false);
+  const pausedAtRef = useRef<number>(0);
 
   // Accent color extracted from cover
   const [rgb, setRgb] = useState<[number, number, number]>([72, 110, 130]);
@@ -337,8 +339,9 @@ export default function RoomPage() {
   };
   const triggerShowtime = async () => {
     if (audioRef.current) {
-      try { await audioRef.current.play(); audioRef.current.pause(); audioRef.current.currentTime = 0; setAudioUnlocked(true); } catch {}
+      try { await audioRef.current.play(); audioRef.current.pause(); audioRef.current.currentTime = 0; } catch {}
     }
+    setAudioUnlocked(true); // always mark unlocked — button click is a user gesture regardless
     const started_at = new Date(Date.now() + 3000).toISOString();
     slidePlayedRef.current = false;
     setAlbumFinished(false);
@@ -351,11 +354,26 @@ export default function RoomPage() {
   const stopShowtime = async () => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
     setIsLive(false); setAlbumFinished(false); setElapsed(0); setStartedAt(null);
+    setIsPaused(false); pausedAtRef.current = 0;
     slidePlayedRef.current = false; setVinylSlideIn(false);
     setPhase("live"); // admin stays in live phase so they can restart
     const { error } = await supabase.from("room_state")
       .upsert({ room_id: "main", is_live: false, started_at: null });
     if (error) console.error("[AlbumClub] room_state stop:", error);
+  };
+  const pausePlayback = () => {
+    pausedAtRef.current = elapsed;
+    setIsPaused(true);
+    if (audioRef.current) audioRef.current.pause();
+  };
+  const resumePlayback = () => {
+    const newStartedAt = new Date(Date.now() - pausedAtRef.current * 1000).toISOString();
+    setStartedAt(newStartedAt);
+    setIsPaused(false);
+    if (audioRef.current) {
+      audioRef.current.currentTime = pausedAtRef.current;
+      audioRef.current.play().catch(() => {});
+    }
   };
   const sendMessage = async () => {
     const body = chatInput.trim(); if (!body || !displayName) return;
@@ -364,11 +382,7 @@ export default function RoomPage() {
   };
 
   // ── Derived values ────────────────────────────────────────────────────────
-  const { track: cur, index: tIdx } = getCurrentTrack(elapsed);
-  const next = TRACKS[tIdx + 1] || null;
-  const tEl  = elapsed - cur.start;
-  const tDur = next ? next.start - cur.start : ALBUM_DURATION - cur.start;
-  const tPct = Math.min(100, (tEl / tDur) * 100);
+  const { index: tIdx } = getCurrentTrack(elapsed);
 
   // ── Shared font CSS ────────────────────────────────────────────────────────
   const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,400;1,700&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&display=swap');
@@ -646,19 +660,25 @@ export default function RoomPage() {
           </button>
 
           {/* Session control — admin only */}
-          {isAdmin && (isLive ? (
+          {isAdmin && isLive && (<>
+            <button onClick={isPaused ? resumePlayback : pausePlayback}
+              className="px-5 py-2.5 rounded-lg fc font-semibold transition backdrop-blur-sm"
+              style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "white", background: isPaused ? accentRgba(0.38) : "rgba(0,0,0,0.55)", border: `1px solid ${isPaused ? accentRgba(0.55) : "rgba(255,255,255,0.24)"}` }}>
+              {isPaused ? "▶ Resume" : "⏸ Pause"}
+            </button>
             <button onClick={stopShowtime}
               className="px-5 py-2.5 rounded-lg fc font-semibold transition backdrop-blur-sm"
               style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "#fca5a5", background: "rgba(180,30,30,0.32)", border: "1px solid rgba(248,113,113,0.35)" }}>
               End Session
             </button>
-          ) : (
+          </>)}
+          {isAdmin && !isLive && (
             <button onClick={triggerShowtime}
               className="px-5 py-2.5 rounded-lg fc font-semibold transition backdrop-blur-sm"
               style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "white", background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.24)" }}>
               Start Showtime
             </button>
-          ))}
+          )}
         </div>
       </header>
 
@@ -710,33 +730,6 @@ export default function RoomPage() {
           </div>
         )}
 
-        {/* ── Track listing — 3 columns × 4 rows ── */}
-        <div>
-          <div className="fc text-white/28 mb-2.5 font-semibold"
-            style={{ fontSize: "0.68rem", letterSpacing: "0.5em", textTransform: "uppercase" }}>
-            Track Listing
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "5px 10px" }}>
-            {TRACKS.map((track, i) => {
-              const isCurrentTrack = isLive && i === tIdx;
-              return (
-                <div key={i} className="flex items-baseline gap-1 min-w-0">
-                  <span className="fc shrink-0" style={{ fontSize: "0.65rem", color: isCurrentTrack ? accentRgba(0.8) : "rgba(255,255,255,0.22)", minWidth: "14px" }}>
-                    {i + 1}
-                  </span>
-                  <span className="fc truncate" style={{
-                    fontSize: "0.72rem",
-                    color: isCurrentTrack ? lighter : "rgba(255,255,255,0.42)",
-                    fontWeight: isCurrentTrack ? 600 : 400,
-                    textShadow: isCurrentTrack ? `0 0 12px ${accentRgba(0.5)}` : "none",
-                  }}>
-                    {track.title}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
       </div>
 
       {/* ── TURNTABLE — centered ── */}
@@ -903,37 +896,68 @@ export default function RoomPage() {
           </div>
         </div>
 
-        {/* Track info card */}
-        {isLive ? (
-          <div className="mt-4 rounded-xl border border-white/10 bg-black/72 backdrop-blur-md px-6 py-5"
-            style={{ boxShadow: `0 10px 40px rgba(0,0,0,0.72), 0 0 0 1px ${accentRgba(0.09)}` }}>
-            <div className="flex justify-between items-start mb-3">
-              <div className="flex-1 min-w-0 pr-4">
-                <div className="fc font-semibold mb-1.5"
-                  style={{ fontSize: "0.7rem", letterSpacing: "0.45em", textTransform: "uppercase", color: `rgba(${Math.min(cr+80,255)},${Math.min(cg+60,255)},${Math.min(cb2+20,255)},0.7)` }}>
-                  Track {tIdx + 1} of {TRACKS.length}
-                </div>
-                <div className="fp font-bold text-white truncate" style={{ fontSize: "1.2rem", lineHeight: 1.3 }}>{cur.title}</div>
+      </div>
+
+      {/* ── TRACK WALL — centered, bottom of screen ── */}
+      <div className="absolute z-10" style={{
+        left: "50%",
+        transform: "translateX(-50%)",
+        bottom: "3%",
+        width: "min(620px, 52vw)",
+      }}>
+        <div className="fc mb-3 text-center" style={{
+          fontSize: "0.68rem",
+          letterSpacing: "0.55em",
+          textTransform: "uppercase",
+          color: "rgba(255,255,255,0.22)",
+        }}>
+          Tracklist
+        </div>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${TRACKS.length > 12 ? 4 : 3}, 1fr)`,
+          gap: "6px 16px",
+        }}>
+          {TRACKS.map((track, i) => {
+            const isCurrentTrack = isLive && !isPaused && i === tIdx;
+            const isPausedCurrent = isPaused && i === tIdx;
+            const isActive = isCurrentTrack || isPausedCurrent;
+            return (
+              <div key={i}
+                className="flex items-baseline gap-2 min-w-0 w-full px-2 py-1 rounded-lg"
+                style={{
+                  background: isActive ? accentRgba(0.13) : "transparent",
+                  border: isActive ? `1px solid ${accentRgba(0.28)}` : "1px solid transparent",
+                  boxShadow: isCurrentTrack ? `0 0 18px ${accentRgba(0.18)}` : "none",
+                  transition: "all 0.7s ease",
+                }}>
+                <span className="fc shrink-0" style={{
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  color: isActive ? accentRgba(0.9) : "rgba(255,255,255,0.18)",
+                  minWidth: "18px",
+                  textAlign: "right",
+                  transition: "color 0.7s ease",
+                }}>
+                  {i + 1}
+                </span>
+                <span className="fp truncate" style={{
+                  fontSize: isActive ? "1.05rem" : "0.92rem",
+                  fontWeight: isActive ? 700 : 500,
+                  fontStyle: isActive ? "normal" : "italic",
+                  color: isActive ? lighter : "rgba(255,255,255,0.35)",
+                  textShadow: isCurrentTrack
+                    ? `0 0 22px ${accentRgba(0.7)}, 0 2px 12px rgba(0,0,0,0.9)`
+                    : "0 1px 6px rgba(0,0,0,0.8)",
+                  transition: "all 0.7s ease",
+                  letterSpacing: isActive ? "0.02em" : "0.01em",
+                }}>
+                  {track.title}
+                </span>
               </div>
-              <div className="text-right fc shrink-0">
-                <div className="text-white/82 font-semibold" style={{ fontSize: "1rem" }}>{fmt(tEl)}</div>
-                <div className="text-white/30" style={{ fontSize: "0.9rem" }}>/ {fmt(tDur)}</div>
-              </div>
-            </div>
-            {/* Progress bar */}
-            <div className="h-[2px] bg-white/8 rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-all duration-1000"
-                style={{ width: `${tPct}%`, background: `linear-gradient(to right, ${accentRgba(0.5)}, ${accentRgba(0.92)})` }} />
-            </div>
-            {next && (
-              <div className="mt-3 fc text-white/32" style={{ fontSize: "0.9rem" }}>Up next — {next.title}</div>
-            )}
-          </div>
-        ) : (
-          <div className="mt-4 text-center fc text-white/20 tracking-[0.4em] uppercase" style={{ fontSize: "0.9rem" }}>
-            Waiting for showtime
-          </div>
-        )}
+            );
+          })}
+        </div>
       </div>
 
       {/* ── CHAT ── */}
