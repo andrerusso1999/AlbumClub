@@ -65,9 +65,24 @@ export default function RoomPage() {
   const prevIsLiveRef    = useRef(false);
   const needleTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Phase
-  const [phase,        setPhase]        = useState<Phase>("waiting");
-  const [isAdmin,      setIsAdmin]      = useState(false);
+  // Phase — initialize synchronously so the first render is already correct
+  const [isAdmin] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("admin") === "1") { localStorage.setItem("ac_admin", "true"); return true; }
+    } catch {}
+    return localStorage.getItem("ac_admin") === "true";
+  });
+  const [phase, setPhase] = useState<Phase>(() => {
+    if (typeof window === "undefined") return "waiting";
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("admin") === "1" || localStorage.getItem("ac_admin") === "true") return "live";
+    } catch {}
+    const n = new Date(); const st = new Date(); st.setHours(SHOWTIME_HOUR, 0, 0, 0);
+    return n >= st ? "entering" : "waiting";
+  });
   const [preCountdown, setPreCountdown] = useState(PRE_SHOW_SECS);
   const [now,          setNow]          = useState(() => new Date());
 
@@ -133,12 +148,7 @@ export default function RoomPage() {
     return () => clearInterval(id);
   }, []);
 
-  // ── Admin + phase ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("admin") === "1") localStorage.setItem("ac_admin", "true");
-    setIsAdmin(localStorage.getItem("ac_admin") === "true");
-  }, []);
+  // ── Phase transition for non-admin users ──────────────────────────────────
   useEffect(() => {
     if (isAdmin && phase === "waiting") { setPhase("live"); return; }
     const st = new Date(); st.setHours(SHOWTIME_HOUR, 0, 0, 0);
@@ -329,17 +339,23 @@ export default function RoomPage() {
     if (audioRef.current) {
       try { await audioRef.current.play(); audioRef.current.pause(); audioRef.current.currentTime = 0; setAudioUnlocked(true); } catch {}
     }
+    const started_at = new Date(Date.now() + 3000).toISOString();
     slidePlayedRef.current = false;
     setAlbumFinished(false);
-    await supabase.from("room_state")
-      .upsert({ room_id: "main", is_live: true, started_at: new Date(Date.now() + 3000).toISOString() });
+    setStartedAt(started_at); // update locally first — don't wait for realtime subscription
+    setIsLive(true);
+    const { error } = await supabase.from("room_state")
+      .upsert({ room_id: "main", is_live: true, started_at });
+    if (error) console.error("[AlbumClub] room_state upsert:", error);
   };
   const stopShowtime = async () => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
-    await supabase.from("room_state").upsert({ room_id: "main", is_live: false, started_at: null });
-    setPhase(isAdmin ? "live" : "waiting");
-    setIsLive(false); setAlbumFinished(false); setElapsed(0);
+    setIsLive(false); setAlbumFinished(false); setElapsed(0); setStartedAt(null);
     slidePlayedRef.current = false; setVinylSlideIn(false);
+    setPhase("live"); // admin stays in live phase so they can restart
+    const { error } = await supabase.from("room_state")
+      .upsert({ room_id: "main", is_live: false, started_at: null });
+    if (error) console.error("[AlbumClub] room_state stop:", error);
   };
   const sendMessage = async () => {
     const body = chatInput.trim(); if (!body || !displayName) return;
