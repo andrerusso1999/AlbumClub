@@ -31,7 +31,7 @@ const ALBUM = {
   label:  "Modular Recordings",
   genre:  "Psychedelic Rock",
   tracks: 12,
-  cover:  "https://upload.wikimedia.org/wikipedia/en/4/49/Lonerism.jpg",
+  cover:  "https://upload.wikimedia.org/wikipedia/en/thumb/4/49/Lonerism.jpg/300px-Lonerism.jpg",
 };
 const SHOWTIME_HOUR = 20;
 const PRE_SHOW_SECS = 30;
@@ -338,15 +338,17 @@ export default function RoomPage() {
     localStorage.setItem("ac_display_name", n); setDisplayName(n); setNameSet(true);
   };
   const triggerShowtime = async () => {
-    if (audioRef.current) {
-      try { await audioRef.current.play(); audioRef.current.pause(); audioRef.current.currentTime = 0; } catch {}
-    }
-    setAudioUnlocked(true); // always mark unlocked — button click is a user gesture regardless
-    const started_at = new Date(Date.now() + 3000).toISOString();
+    setAudioUnlocked(true);
+    const started_at = new Date(Date.now() + 500).toISOString();
     slidePlayedRef.current = false;
     setAlbumFinished(false);
-    setStartedAt(started_at); // update locally first — don't wait for realtime subscription
+    setStartedAt(started_at);
     setIsLive(true);
+    // Play directly inside the click handler so the browser user-gesture token is still valid
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch(e => console.error("[AlbumClub] play failed:", e));
+    }
     const { error } = await supabase.from("room_state")
       .upsert({ room_id: "main", is_live: true, started_at });
     if (error) console.error("[AlbumClub] room_state upsert:", error);
@@ -898,15 +900,15 @@ export default function RoomPage() {
 
       </div>
 
-      {/* ── TRACK WALL — centered, bottom of screen ── */}
+      {/* ── TRACK WALL — centered, mid-screen ── */}
       <div className="absolute z-10" style={{
         left: "50%",
         transform: "translateX(-50%)",
-        bottom: "3%",
-        width: "min(620px, 52vw)",
+        bottom: "22%",
+        width: "min(680px, 56vw)",
       }}>
         <div className="fc mb-3 text-center" style={{
-          fontSize: "0.68rem",
+          fontSize: "0.8rem",
           letterSpacing: "0.55em",
           textTransform: "uppercase",
           color: "rgba(255,255,255,0.22)",
@@ -916,7 +918,7 @@ export default function RoomPage() {
         <div style={{
           display: "grid",
           gridTemplateColumns: `repeat(${TRACKS.length > 12 ? 4 : 3}, 1fr)`,
-          gap: "6px 16px",
+          gap: "8px 18px",
         }}>
           {TRACKS.map((track, i) => {
             const isCurrentTrack = isLive && !isPaused && i === tIdx;
@@ -932,17 +934,17 @@ export default function RoomPage() {
                   transition: "all 0.7s ease",
                 }}>
                 <span className="fc shrink-0" style={{
-                  fontSize: "0.88rem",
+                  fontSize: "1.1rem",
                   fontWeight: 600,
                   color: isActive ? accentRgba(0.9) : "rgba(255,255,255,0.18)",
-                  minWidth: "18px",
+                  minWidth: "22px",
                   textAlign: "right",
                   transition: "color 0.7s ease",
                 }}>
                   {i + 1}
                 </span>
                 <span className="fp truncate" style={{
-                  fontSize: isActive ? "1.05rem" : "0.92rem",
+                  fontSize: isActive ? "1.38rem" : "1.18rem",
                   fontWeight: isActive ? 700 : 500,
                   fontStyle: isActive ? "normal" : "italic",
                   color: isActive ? lighter : "rgba(255,255,255,0.35)",
