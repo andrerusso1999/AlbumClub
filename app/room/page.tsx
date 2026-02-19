@@ -134,7 +134,11 @@ export default function RoomPage() {
   }, []);
 
   // ── Admin + phase ─────────────────────────────────────────────────────────
-  useEffect(() => { setIsAdmin(localStorage.getItem("ac_admin") === "true"); }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("admin") === "1") localStorage.setItem("ac_admin", "true");
+    setIsAdmin(localStorage.getItem("ac_admin") === "true");
+  }, []);
   useEffect(() => {
     if (isAdmin && phase === "waiting") { setPhase("live"); return; }
     const st = new Date(); st.setHours(SHOWTIME_HOUR, 0, 0, 0);
@@ -328,12 +332,11 @@ export default function RoomPage() {
     slidePlayedRef.current = false;
     setAlbumFinished(false);
     await supabase.from("room_state")
-      .update({ is_live: true, started_at: new Date(Date.now() + 3000).toISOString() })
-      .eq("room_id", "main");
+      .upsert({ room_id: "main", is_live: true, started_at: new Date(Date.now() + 3000).toISOString() });
   };
   const stopShowtime = async () => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
-    await supabase.from("room_state").update({ is_live: false, started_at: null }).eq("room_id", "main");
+    await supabase.from("room_state").upsert({ room_id: "main", is_live: false, started_at: null });
     setPhase(isAdmin ? "live" : "waiting");
     setIsLive(false); setAlbumFinished(false); setElapsed(0);
     slidePlayedRef.current = false; setVinylSlideIn(false);
@@ -626,8 +629,8 @@ export default function RoomPage() {
             <span className="fc text-[17px] text-white font-semibold">{crackleOn ? "Crackle ✓" : "Crackle"}</span>
           </button>
 
-          {/* Session control */}
-          {isLive ? (
+          {/* Session control — admin only */}
+          {isAdmin && (isLive ? (
             <button onClick={stopShowtime}
               className="px-5 py-2.5 rounded-lg fc font-semibold transition backdrop-blur-sm"
               style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "#fca5a5", background: "rgba(180,30,30,0.32)", border: "1px solid rgba(248,113,113,0.35)" }}>
@@ -639,7 +642,7 @@ export default function RoomPage() {
               style={{ fontSize: "1rem", letterSpacing: "0.2em", textTransform: "uppercase", color: "white", background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.24)" }}>
               Start Showtime
             </button>
-          )}
+          ))}
         </div>
       </header>
 

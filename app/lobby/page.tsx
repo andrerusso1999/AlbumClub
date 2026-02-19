@@ -60,7 +60,11 @@ export default function LobbyPage() {
 
   useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id); }, []);
   useEffect(() => { setUserId(getOrCreateUserId()); }, []);
-  useEffect(() => { setIsAdmin(localStorage.getItem("ac_admin") === "true"); }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("admin") === "1") localStorage.setItem("ac_admin", "true");
+    setIsAdmin(localStorage.getItem("ac_admin") === "true");
+  }, []);
 
   // Showtime lock
   const isLocked = useMemo(() => {
